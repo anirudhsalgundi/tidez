@@ -1,0 +1,14 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "tidez"
+version = "0.1.0"
+dependencies = [
+    # Add your package dependencies here, e.g.,
+    # "requests>=2.31.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["tidez"]
