@@ -1,58 +1,11 @@
-# Python-generated files
-__pycache__/
-*.py[oc]
-build/
-dist/
-wheels/
-*.egg-info
-.python-version
-
-# Virtual environments
 .venv
-
+data/
+exports/
+*fits
+logs/
+.DS_Store
 uv.lock
-
-# Jupyter Notebook checkpoints
-.ipynb_checkpoints/
-*.ipynb
-
-# SLURM outputs
-slurm*out
-slurm_status.txt
-
-# Data files
-data/*.txt
-temp*
-
-# Logs - ignore all log files but keep folders
-logs/*.log
-logs/*.out
-logs/*.err
-src/logs/*.log
-src/logs/*.out
-src/logs/*.err
-
-# Generated templates in src (keep main templates folder)
-src/templates/
-
-# Results - ignore generated files but keep folder structure
-results/databases/*.h5
-results/plots/**/*
-results/summaries/*.html
-results/test_run/
-!results/test_run/.gitkeep
-src/results/plots/**/*
-
-#exports
-exports/*
-
-# Keep folder structure with .gitkeep
-!logs/.gitkeep
-!results/.gitkeep
-!results/**/.gitkeep
-
-# Keep templates
-!templates/summary_template.html
-
-results/**/*json
-src/results/**/*html
+*png
+*pdf
+*fits
+src/*
