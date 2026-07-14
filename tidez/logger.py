@@ -34,11 +34,11 @@ def get_logger(name: str, level: int = logging.INFO) -> logging.Logger:
     log_file = LOG_DIR / f"tidez_{name}_{timestamp}.log"
 
     console_handler = logging.StreamHandler()
-    console_handler.setFormatter(CustomFormatter("[%(levelname)s] at %(asctime)s: \033[97m%(message)s\033[0m"))  # message in white
+    console_handler.setFormatter(CustomFormatter("[%(levelname)s] at %(asctime)s: \033[97m%(message)s\033[0m"))
     logger.addHandler(console_handler)
 
     file_handler = logging.FileHandler(log_file)
-    file_handler.setFormatter(logging.Formatter("[%(asctime)s] at %(levelname)s: %(message)s"))
+    file_handler.setFormatter(logging.Formatter("[%(levelname)s] at %(asctime)s: %(message)s"))
     logger.addHandler(file_handler)
 
     logger.propagate = False
