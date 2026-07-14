@@ -10,3 +10,4 @@ uv.lock
 *fits
 src/*
 MatchToZTF.ipynb
+*.pyc
