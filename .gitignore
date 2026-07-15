@@ -11,3 +11,5 @@ uv.lock
 src/*
 MatchToZTF.ipynb
 *.pyc
+uv.lock
+__pycache__
