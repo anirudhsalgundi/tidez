@@ -64,6 +64,14 @@ def write_max_detections_per_observation(candidate_fits_files):
     logger.info(f"Max-detections file paths written to {MAX_DETECTIONS_FILE}")
     return best_per_observation
 
+def total_size_bytes(file_paths):
+    total = 0
+    for p in file_paths:
+        try:
+            total += os.path.getsize(p)
+        except OSError as e:
+            logger.warning(f"Could not stat {p}: {e}")
+    return total
 
 def main():
     candidate_fits_files = find_candidate_fits_files()
@@ -73,7 +81,8 @@ def main():
         f"Read {len(candidate_fits_files)} total FITS files; "
         f"picked {len(best_per_observation)} files (one max-detections file per unique observation ID)."
     )
-
+    total_bytes = total_size_bytes(candidate_fits_files)
+    logger.info(f"Total size: {total_bytes / (1024**3):.2f} GB")    
 
 if __name__ == "__main__":
     main()
