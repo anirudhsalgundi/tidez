@@ -13,3 +13,4 @@ MatchToZTF.ipynb
 *.pyc
 uv.lock
 __pycache__
+tidez.md

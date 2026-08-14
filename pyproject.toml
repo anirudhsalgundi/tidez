@@ -6,8 +6,12 @@ build-backend = "hatchling.build"
 name = "tidez"
 version = "0.1.0"
 dependencies = [
-    # Add your package dependencies here, e.g.,
-    # "requests>=2.31.0",
+    "astropy",
+    "numpy",
+    "h5py",
+    "tqdm",
+    "requests",
+    "matplotlib",
 ]
 
 [tool.hatch.build.targets.wheel]
