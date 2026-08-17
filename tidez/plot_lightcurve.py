@@ -56,11 +56,12 @@ SURVEY_STYLE = {
 def _decam_rows(h5file, objid):
     rows = []
     lc = h5file[objid]["lightcurve"][:]
-    for row in lc:
+    for epoch_idx, row in enumerate(lc):
         band = row["FILTER"].decode("ascii").strip()
         if not band or band == "N/A":
             continue
         jd = float(row["MJD_OBS"]) + MJD_TO_JD_OFFSET
+        status = row["STATUS_FPHOT"].decode("ascii").strip()
         detected = row["STATUS_FPHOT"] in DECAM_DETECTED_STATUSES
         rows.append({
             "jd": jd,
@@ -70,6 +71,9 @@ def _decam_rows(h5file, objid):
             "band": band,
             "detected": detected,
             "survey": "DECam",
+            "epoch_idx": epoch_idx,
+            "snr": float(row["SNR_FPHOT"]),
+            "status": status,
         })
     return rows
 
@@ -90,6 +94,9 @@ def _crossmatch_rows(h5file, objid, survey_key, survey_label):
             "band": band or "?",
             "detected": bool(row["detected"]),
             "survey": survey_label,
+            "epoch_idx": None,  # no cutouts stored for crossmatched surveys
+            "snr": None,  # SNR/STATUS_FPHOT are DECam-specific (forced photometry on the diff image)
+            "status": None,
         })
     return rows
 
@@ -113,6 +120,12 @@ def load_object_rows(h5file, objid):
     return rows
 
 
+def first_detection_jd(rows):
+    """jd of the first detection, or the earliest row's jd if nothing was detected."""
+    detected_jds = [r["jd"] for r in rows if r["detected"]]
+    return min(detected_jds) if detected_jds else min(r["jd"] for r in rows)
+
+
 def render_lightcurve(ax, rows, objid, title_suffix="", title_extra=""):
     """Draw a combined lightcurve into `ax` (creates a twiny for the top axis).
     Returns (ax2, legend, artists_by_label) so callers can wire up interactivity.
@@ -125,8 +138,7 @@ def render_lightcurve(ax, rows, objid, title_suffix="", title_extra=""):
         return None, None, artists_by_label
 
     jd_now = Time.now().jd
-    detected_jds = [r["jd"] for r in rows if r["detected"]]
-    jd_first = min(detected_jds) if detected_jds else min(r["jd"] for r in rows)
+    jd_first = first_detection_jd(rows)
 
     for r in rows:
         t = r["jd"] - jd_first

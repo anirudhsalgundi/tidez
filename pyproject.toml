@@ -12,6 +12,8 @@ dependencies = [
     "tqdm",
     "requests",
     "matplotlib",
+    "fastapi",
+    "uvicorn",
 ]
 
 [tool.hatch.build.targets.wheel]

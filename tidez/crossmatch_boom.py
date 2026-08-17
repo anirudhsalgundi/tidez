@@ -5,8 +5,16 @@ into the same H5 file. This is a separate pass from the (future) filter
 step: crossmatching is the slow, network-bound, flaky part, so it's cached
 once and the filter can be iterated on cheaply afterwards.
 
+BOOM's cone_search endpoint accepts multiple objects in one query
+(`object_coordinates` is a dict of arbitrary-key -> [ra, dec]), so objects
+are queried in batches of BATCH_SIZE rather than one HTTP request per
+object. This cuts the request count by ~BATCH_SIZE and is far friendlier to
+the API; a short sleep is inserted between batches to stay well under
+whatever rate limit BOOM enforces.
+
 For each object and each survey:
-  - Cone search BOOM at (ra, dec) from the object's existing H5 attrs.
+  - Batch cone search BOOM at (ra, dec) from the object's existing H5 attrs,
+    alongside up to BATCH_SIZE-1 other objects in the same request.
   - Alerts are grouped by objectId (an object can have multiple prior
     alerts). The group whose position is nearest the DECam target position
     is treated as the match; its full alert history becomes the stored
@@ -23,9 +31,8 @@ Written layout (added under each existing /<objid>/ group):
 
 Resumable the same way as build_h5.py: an object's /crossmatch group is only
 created after both surveys have been queried and its arrays built in
-memory, so it's either absent or complete. Flushed to disk every
-FLUSH_EVERY objects. Re-running skips any objid that already has a
-/crossmatch group.
+memory, so it's either absent or complete. Flushed to disk after every
+batch. Re-running skips any objid that already has a /crossmatch group.
 """
 
 import argparse
@@ -50,9 +57,11 @@ DATA_DIR = PROJECT_ROOT / "data"
 DEFAULT_H5 = DATA_DIR / "tidez_master.h5"
 DEFAULT_CROSSMATCH_LIST = DATA_DIR / "boom_crossmatches.txt"
 DEFAULT_RADIUS_ARCSEC = 5.0
-FLUSH_EVERY = 50
-REQUEST_TIMEOUT = 15
+REQUEST_TIMEOUT = 30
 MAX_RETRIES = 3
+
+BATCH_SIZE = 500
+SLEEP_BETWEEN_BATCHES = 2.0  # seconds
 
 BOOM_BASE = "https://api.kaboom.caltech.edu"
 BOOM_AUTH_URL = f"{BOOM_BASE}/auth"
@@ -109,13 +118,18 @@ def _auth_header(force_relogin=False):
     return {"Content-Type": "application/json", "Authorization": f"Bearer {_token}"}
 
 
-def cone_search_survey(ra: float, dec: float, survey: str, radius_arcsec: float):
-    """Return the raw list of alert docs from BOOM for one survey, with retry
-    and automatic re-auth on token expiry."""
+def cone_search_batch(coords: dict, survey: str, radius_arcsec: float):
+    """Cone search BOOM for many objects in one request.
+
+    `coords` maps an arbitrary key (here, objid) to [ra, dec]; at most
+    BATCH_SIZE entries should be passed at a time. Returns a dict mapping
+    each key present in the response to its raw list of alert docs (keys
+    with no matches are simply absent, matching BOOM's response shape).
+    """
     catalog = SURVEY_CATALOGS[survey]
     payload = {
         "catalog_name": catalog,
-        "object_coordinates": {"target": [ra, dec]},
+        "object_coordinates": {key: [ra, dec] for key, (ra, dec) in coords.items()},
         "radius": radius_arcsec,
         "unit": "Arcseconds",
     }
@@ -134,17 +148,17 @@ def cone_search_survey(ra: float, dec: float, survey: str, radius_arcsec: float)
                 _auth_header(force_relogin=True)
                 continue
             resp.raise_for_status()
-            return resp.json().get("data", {}).get("target", [])
+            return resp.json().get("data", {})
         except requests.RequestException as exc:
             last_exc = exc
             wait = 2 ** attempt
             logger.warning(
-                f"BOOM cone search failed (attempt {attempt}/{MAX_RETRIES}) "
-                f"for {survey} at ({ra:.5f},{dec:.5f}): {exc}. Retrying in {wait}s."
+                f"BOOM batch cone search failed (attempt {attempt}/{MAX_RETRIES}) "
+                f"for {survey} ({len(coords)} objects): {exc}. Retrying in {wait}s."
             )
             time.sleep(wait)
 
-    raise RuntimeError(f"BOOM cone search failed after {MAX_RETRIES} attempts: {last_exc}")
+    raise RuntimeError(f"BOOM batch cone search failed after {MAX_RETRIES} attempts: {last_exc}")
 
 
 # ---------------------------------------------------------------------------
@@ -199,8 +213,8 @@ def _build_lightcurve(alerts):
 # H5 read/write
 # ---------------------------------------------------------------------------
 
-def crossmatch_one_survey(h5file, objid, ra, dec, survey, radius_arcsec):
-    alerts = cone_search_survey(ra, dec, survey, radius_arcsec)
+def write_survey_match(h5file, objid, ra, dec, survey, alerts):
+    """Write one object's crossmatch/<survey> group from already-fetched alerts."""
     if not alerts:
         return
 
@@ -224,15 +238,36 @@ def crossmatch_one_survey(h5file, objid, ra, dec, survey, radius_arcsec):
     )
 
 
-def crossmatch_object(h5file, objid, radius_arcsec):
-    ra = float(h5file[objid].attrs["ra"])
-    dec = float(h5file[objid].attrs["dec"])
+def crossmatch_batch(h5file, batch_objids, radius_arcsec):
+    """Cone search one batch of objects against every survey (one BOOM
+    request per survey, covering the whole batch) and write results.
 
-    cm_group = h5file[objid].create_group("crossmatch")
-    cm_group.attrs["radius_arcsec"] = radius_arcsec
+    Returns (n_processed, n_failed). On a network failure for a survey, the
+    *entire* batch is skipped for that call (no partial /crossmatch groups
+    are created) so a re-run retries the whole batch cleanly, matching the
+    per-object resumability of the old code.
+    """
+    coords = {
+        objid: (float(h5file[objid].attrs["ra"]), float(h5file[objid].attrs["dec"]))
+        for objid in batch_objids
+    }
 
+    alerts_by_survey = {}
     for survey in SURVEY_CATALOGS:
-        crossmatch_one_survey(h5file, objid, ra, dec, survey, radius_arcsec)
+        try:
+            alerts_by_survey[survey] = cone_search_batch(coords, survey, radius_arcsec)
+        except Exception:
+            logger.error(f"Failed to batch-crossmatch {len(batch_objids)} objects:\n{traceback.format_exc()}")
+            return 0, len(batch_objids)
+
+    for objid in batch_objids:
+        ra, dec = coords[objid]
+        cm_group = h5file[objid].create_group("crossmatch")
+        cm_group.attrs["radius_arcsec"] = radius_arcsec
+        for survey in SURVEY_CATALOGS:
+            write_survey_match(h5file, objid, ra, dec, survey, alerts_by_survey[survey].get(objid, []))
+
+    return len(batch_objids), 0
 
 
 def _has_any_match(h5file, objid):
@@ -248,43 +283,33 @@ def run(h5_path: pathlib.Path, radius_arcsec: float, output_list: pathlib.Path, 
             objids = objids[:limit]
 
         already_done = {objid for objid in objids if "crossmatch" in h5file[objid]}
+        todo = [objid for objid in objids if objid not in already_done]
         logger.info(
             f"{len(objids)} objects in {h5_path}; "
             f"{len(already_done)} already crossmatched, will be skipped."
         )
 
         n_processed = 0
-        n_skipped = 0
+        n_skipped = len(already_done)
         n_failed = 0
 
-        pbar = tqdm(objids, desc="Crossmatching with BOOM", unit="obj")
-        for i, objid in enumerate(pbar, start=1):
-            pbar.set_postfix_str(f"{i}/{len(objids)}")
+        batches = [todo[i:i + BATCH_SIZE] for i in range(0, len(todo), BATCH_SIZE)]
+        pbar = tqdm(batches, desc="Crossmatching with BOOM", unit="batch")
+        for i, batch in enumerate(pbar, start=1):
+            pbar.set_postfix_str(f"batch {i}/{len(batches)} ({n_processed}/{len(todo)} objects)")
 
-            if objid in already_done:
-                n_skipped += 1
-                logger.debug(f"Skipping already-crossmatched object: {objid}")
-                continue
+            processed, failed = crossmatch_batch(h5file, batch, radius_arcsec)
+            n_processed += processed
+            n_failed += failed
 
-            try:
-                crossmatch_object(h5file, objid, radius_arcsec)
-                n_processed += 1
-            except Exception:
-                n_failed += 1
-                logger.error(f"Failed to crossmatch {objid}:\n{traceback.format_exc()}")
-                # Remove a possibly-partial group so a resume retries it cleanly.
-                if "crossmatch" in h5file[objid]:
-                    del h5file[objid]["crossmatch"]
-                continue
+            h5file.flush()
+            logger.info(
+                f"Flushed after batch {i}/{len(batches)} "
+                f"(processed={n_processed}, skipped={n_skipped}, failed={n_failed})"
+            )
 
-            if n_processed % FLUSH_EVERY == 0:
-                h5file.flush()
-                logger.info(
-                    f"Flushed at object {i}/{len(objids)} "
-                    f"(processed={n_processed}, skipped={n_skipped}, failed={n_failed})"
-                )
-
-        h5file.flush()
+            if i < len(batches):
+                time.sleep(SLEEP_BETWEEN_BATCHES)
 
         matched_objids = [objid for objid in objids if _has_any_match(h5file, objid)]
 

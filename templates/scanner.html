@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>tidez scanner</title>
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+<style>
+    * { box-sizing: border-box; }
+    body {
+        margin: 0;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        background: #1b1d23;
+        color: #e8e8ea;
+    }
+    header {
+        padding: 14px 24px;
+        background: #22242c;
+        border-bottom: 1px solid #33353e;
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        flex-wrap: wrap;
+    }
+    header h1 { font-size: 1.1em; margin: 0; font-weight: 600; }
+    .filter-box { display: flex; align-items: center; gap: 8px; }
+    .filter-box input {
+        background: #14151a; color: #e8e8ea; border: 1px solid #3a3d47;
+        border-radius: 6px; padding: 6px 10px; font-size: 0.9em; width: 260px;
+    }
+    button {
+        background: #3a3d47; color: #e8e8ea; border: none; border-radius: 6px;
+        padding: 7px 14px; font-size: 0.9em; cursor: pointer;
+    }
+    button:hover { background: #4a4d59; }
+    button.fav { background: #4a3d1f; }
+    button.fav.active { background: #b58900; color: #1b1d23; font-weight: 600; }
+    #status { color: #9a9ca6; font-size: 0.85em; }
+
+    main { padding: 20px 24px; max-width: 1200px; margin: 0 auto; }
+    #lightcurve { width: 100%; height: 480px; }
+
+    #cutouts {
+        display: flex; gap: 16px; margin-top: 16px; justify-content: center;
+    }
+    .cutout-panel {
+        background: #22242c; border: 1px solid #33353e; border-radius: 8px;
+        padding: 10px; text-align: center; width: 220px;
+    }
+    .cutout-panel .label {
+        font-size: 0.8em; text-transform: uppercase; letter-spacing: 0.5px;
+        color: #9a9ca6; margin-bottom: 6px;
+    }
+    .cutout-panel img { width: 100%; border-radius: 4px; background: #000; }
+    #cutout-hint { text-align: center; color: #9a9ca6; margin-top: 16px; font-size: 0.9em; }
+</style>
+</head>
+<body>
+
+<header>
+    <h1>tidez scanner</h1>
+    <div class="filter-box">
+        <input id="objidsFile" type="text" placeholder="objids file (e.g. boom_crossmatches.txt) - blank = all">
+        <button id="applyFilter">Apply</button>
+    </div>
+    <button id="prevBtn">&lt; Prev</button>
+    <button id="nextBtn">Next &gt;</button>
+    <button id="favBtn" class="fav">☆ Favorite</button>
+    <span id="status"></span>
+</header>
+
+<main>
+    <div id="lightcurve"></div>
+    <div id="cutout-hint">Click a DECam point on the lightcurve to load its cutouts.</div>
+    <div id="cutouts" style="display:none;">
+        <div class="cutout-panel"><div class="label">Template</div><img id="cutout-template"></div>
+        <div class="cutout-panel"><div class="label">Science</div><img id="cutout-science"></div>
+        <div class="cutout-panel"><div class="label">Diff</div><img id="cutout-diff"></div>
+    </div>
+</main>
+
+<script>
+// Bright, dark-background-safe variants of the intuitive u/g/r/i/z/y
+// mapping (the matplotlib version's palette used pure black for 'z', which
+// disappears against this UI's dark background).
+const BAND_COLORS = { u: "#b06bff", g: "#3ddc71", r: "#ff5a5f", i: "#ff9f40", z: "#e8e8ea", y: "#c88b6a" };
+const SURVEY_SYMBOL = { DECam: "diamond", ZTF: "circle", LSST: "triangle-up" };
+
+let objids = [];
+let index = 0;
+let favorites = new Set();
+let currentObjid = null;
+
+// Bumped on every drawCurrent() call; a fetch response is only applied if
+// this still matches the token it was issued under, so out-of-order
+// responses from rapid Prev/Next clicks can't clobber a newer render.
+let renderToken = 0;
+
+const statusEl = document.getElementById("status");
+const favBtn = document.getElementById("favBtn");
+const lcDiv = document.getElementById("lightcurve");
+const cutoutsDiv = document.getElementById("cutouts");
+const cutoutHint = document.getElementById("cutout-hint");
+
+function niceStep(range, targetTicks = 6) {
+    const rough = range / targetTicks || 1;
+    const mag = Math.pow(10, Math.floor(Math.log10(rough)));
+    const norm = rough / mag;
+    const step = norm < 1.5 ? 1 : norm < 3 ? 2 : norm < 7 ? 5 : 10;
+    return step * mag;
+}
+
+async function loadFavorites() {
+    const res = await fetch("/api/favorites");
+    const data = await res.json();
+    favorites = new Set(data.favorites);
+}
+
+async function loadObjects(objidsFile) {
+    const url = objidsFile ? `/api/objects?objids_file=${encodeURIComponent(objidsFile)}` : "/api/objects";
+    const res = await fetch(url);
+    if (!res.ok) {
+        statusEl.textContent = `Error: ${(await res.json()).detail}`;
+        return;
+    }
+    const data = await res.json();
+    objids = data.objids;
+    index = 0;
+    if (objids.length === 0) {
+        statusEl.textContent = "No objects found.";
+        Plotly.purge(lcDiv);
+        return;
+    }
+    await drawCurrent();
+}
+
+function updateFavButton(objid) {
+    const isFav = favorites.has(objid);
+    favBtn.textContent = isFav ? "★ Favorited" : "☆ Favorite";
+    favBtn.classList.toggle("active", isFav);
+}
+
+function resetCutouts() {
+    cutoutsDiv.style.display = "none";
+    cutoutHint.style.display = "block";
+}
+
+function buildTraces(rows) {
+    const detectedJds = rows.filter(r => r.detected).map(r => r.jd);
+    const jdFirst = detectedJds.length ? Math.min(...detectedJds) : Math.min(...rows.map(r => r.jd));
+
+    const byLabel = {};
+    for (const r of rows) {
+        const label = r.detected ? `${r.band} (${r.survey})` : `${r.band} upper limit (${r.survey})`;
+        if (!byLabel[label]) byLabel[label] = { rows: [], detected: r.detected, band: r.band, survey: r.survey };
+        byLabel[label].rows.push(r);
+    }
+
+    const traces = [];
+    for (const [label, group] of Object.entries(byLabel)) {
+        const color = BAND_COLORS[group.band] || "#888888";
+        const symbol = SURVEY_SYMBOL[group.survey] || "x";
+        const isDecam = group.survey === "DECam";
+        const xs = group.rows.map(r => r.jd - jdFirst);
+        const ys = group.rows.map(r => group.detected ? r.mag : r.limmag);
+        const customdata = group.rows.map(r => r.epoch_idx);
+        // SNR/STATUS_FPHOT ('p'/'q'/'m') come from DECam forced photometry on
+        // the difference image; surface them in the hover so it's easy to
+        // eyeball which points are reliable ('p' > 'q' > 'm').
+        const text = group.rows.map(r => isDecam
+            ? `SNR: ${r.snr != null ? r.snr.toFixed(1) : "n/a"}  |  status: ${r.status}`
+            : "");
+
+        if (group.detected) {
+            traces.push({
+                x: xs, y: ys, customdata, text,
+                error_y: { type: "data", array: group.rows.map(r => r.magerr), visible: true, color },
+                mode: "markers", type: "scatter", name: label,
+                marker: { color, symbol, size: 9, line: { width: 1, color: "#14151a" } },
+                hovertemplate: `${label}<br>mag: %{y:.3f}<br>%{text}<extra></extra>`,
+            });
+        } else {
+            traces.push({
+                x: xs, y: ys, customdata, text,
+                mode: "markers", type: "scatter", name: label,
+                marker: { color, symbol: "triangle-down", size: 8, opacity: 0.4 },
+                hovertemplate: `${label}<br>lim. mag (5σ): %{y:.3f}<br>%{text}<extra></extra>`,
+            });
+        }
+    }
+    return traces;
+}
+
+async function drawCurrent() {
+    const token = ++renderToken;
+
+    resetCutouts();
+    const objid = objids[index];
+    updateFavButton(objid);
+    statusEl.textContent = `[${index + 1}/${objids.length}] ${objid}`;
+
+    const res = await fetch(`/api/objects/${encodeURIComponent(objid)}/lightcurve`);
+    const data = await res.json();
+
+    if (token !== renderToken) return;  // a newer Prev/Next click already superseded this one
+    currentObjid = objid;
+
+    if (!data.rows.length) {
+        Plotly.react(lcDiv, [], {
+            title: `${objid}${data.title_suffix} (no lightcurve data)`,
+            paper_bgcolor: "#1b1d23", plot_bgcolor: "#1b1d23", font: { color: "#e8e8ea" },
+        });
+        attachClickListener();
+        return;
+    }
+
+    const traces = buildTraces(data.rows);
+
+    const xs = traces.flatMap(t => t.x);
+    const xMin = Math.min(0, ...xs);
+    const xMax = Math.max(...xs);
+    const totalSpan = data.jd_now - data.jd_first;
+    const pad = (xMax - xMin) * 0.04 || 1;
+    const range = [xMin - pad, xMax + pad];
+
+    const step = niceStep(xMax - xMin);
+    const tickvals = [];
+    for (let v = 0; v <= xMax + step / 2; v += step) tickvals.push(v);
+    const ticktextDaysAgo = tickvals.map(v => Math.round(totalSpan - v));
+    const ticktextSinceFirst = tickvals.map(v => Math.round(v));
+
+    // xaxis2 mirrors xaxis' range (via `matches`) to draw a second, top-side
+    // tick row over the same physical positions with different labels.
+    traces.push({
+        x: [xMin, xMax], y: [null, null], xaxis: "x2", yaxis: "y",
+        mode: "markers", marker: { opacity: 0 }, showlegend: false, hoverinfo: "skip",
+    });
+
+    const layout = {
+        title: `${objid}${data.title_suffix}`,
+        xaxis: {
+            title: "Days ago", range, tickvals, ticktext: ticktextDaysAgo,
+            color: "#e8e8ea", gridcolor: "#33353e",
+        },
+        xaxis2: {
+            overlaying: "x", matches: "x", side: "top",
+            tickvals, ticktext: ticktextSinceFirst,
+            title: "Days since first detection",
+            color: "#e8e8ea", gridcolor: "transparent",
+        },
+        yaxis: { title: "Magnitude", autorange: "reversed", color: "#e8e8ea", gridcolor: "#33353e" },
+        paper_bgcolor: "#1b1d23", plot_bgcolor: "#1b1d23", font: { color: "#e8e8ea" },
+        legend: { font: { size: 10 } },
+        margin: { t: 70 },
+    };
+    Plotly.react(lcDiv, traces, layout, { responsive: true });
+    attachClickListener();
+}
+
+// Plotly.react (unlike newPlot) updates the existing plot in place and
+// preserves listeners registered via `.on()`, so attaching once here is
+// enough for every subsequent object; guarded anyway in case a future edit
+// reintroduces a newPlot() call somewhere.
+let clickListenerAttached = false;
+function attachClickListener() {
+    if (clickListenerAttached) return;
+    clickListenerAttached = true;
+    lcDiv.on("plotly_click", async (evt) => {
+        const point = evt.points[0];
+        const epochIdx = point.customdata;
+        if (currentObjid === null || epochIdx === null || epochIdx === undefined) {
+            cutoutHint.textContent = "No cutout available for this point (not a DECam epoch).";
+            cutoutHint.style.display = "block";
+            cutoutsDiv.style.display = "none";
+            return;
+        }
+        await loadCutouts(currentObjid, epochIdx);
+    });
+}
+
+async function loadCutouts(objid, epochIdx) {
+    const res = await fetch(`/api/objects/${encodeURIComponent(objid)}/cutout/${epochIdx}`);
+    if (!res.ok) return;
+    const data = await res.json();
+    document.getElementById("cutout-template").src = `data:image/png;base64,${data.template}`;
+    document.getElementById("cutout-science").src = `data:image/png;base64,${data.science}`;
+    document.getElementById("cutout-diff").src = `data:image/png;base64,${data.diff}`;
+    cutoutHint.style.display = "none";
+    cutoutsDiv.style.display = "flex";
+}
+
+document.getElementById("prevBtn").onclick = () => {
+    if (!objids.length) return;
+    index = (index - 1 + objids.length) % objids.length;
+    drawCurrent();
+};
+document.getElementById("nextBtn").onclick = () => {
+    if (!objids.length) return;
+    index = (index + 1) % objids.length;
+    drawCurrent();
+};
+document.getElementById("favBtn").onclick = async () => {
+    if (!objids.length) return;
+    const objid = objids[index];
+    await fetch(`/api/favorites/${encodeURIComponent(objid)}`, { method: "POST" });
+    favorites.add(objid);
+    updateFavButton(objid);
+};
+document.getElementById("applyFilter").onclick = () => {
+    loadObjects(document.getElementById("objidsFile").value.trim());
+};
+
+(async function init() {
+    await loadFavorites();
+    await loadObjects(null);
+})();
+</script>
+</body>
+</html>
