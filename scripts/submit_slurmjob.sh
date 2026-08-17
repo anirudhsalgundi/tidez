@@ -1,15 +1,18 @@
 #!/bin/bash
-#SBATCH -J desirt_full_run
-#SBATCH -p RM
-#SBATCH --ntasks-per-node=128
-#SBATCH --mem=220G
+#SBATCH -J tidez_build_h5
+#SBATCH -p RM-shared
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=1
+#SBATCH --mem=2000M
 #SBATCH -A phy250012p
-#SBATCH -t 48:00:00
-#SBATCH -o ../logs/desirt_full_%j.out
-#SBATCH -e ../logs/desirt_full_%j.err
+#SBATCH -t 30:00:00
+#SBATCH -o ../logs/tidez_build_h5_%j.out
+#SBATCH -e ../logs/tidez_build_h5_%j.err
 
-source /ocean/projects/phy250012p/salgundi/desirt_lightcurves/.venv/bin/activate
-time uv run python /ocean/projects/phy250012p/salgundi/desirt_lightcurves/src/00_organize_data.py \
-    --data /ocean/projects/phy250012p/salgundi/desirt_lightcurves/data/latest_file_paths.txt \
-    --n_workers 64 \
-    --batch_size 1000 \
+source /ocean/projects/phy250012p/salgundi/tidez/.venv/bin/activate
+
+cp /ocean/projects/phy250012p/salgundi/tidez/data/tidez_master.h5 \
+   /ocean/projects/phy250012p/salgundi/tidez/data/desirt_master_bd.h5
+
+time uv run python /ocean/projects/phy250012p/salgundi/tidez/tidez/crossmatch_boom.py \
+    --h5 /ocean/projects/phy250012p/salgundi/tidez/data/tidez_master.h5
