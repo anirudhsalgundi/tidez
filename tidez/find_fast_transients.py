@@ -32,6 +32,7 @@ logger = get_logger("find_fast_transients")
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parent.parent
 DATA_DIR = PROJECT_ROOT / "data"
 DEFAULT_OUTPUT = DATA_DIR / "fast_transient_candidates.txt"
+DEFAULT_CROSSMATCH_OUTPUT = DATA_DIR / "fast_transient_candidates_crossmatched.txt"
 DEFAULT_THRESHOLD = 0.1  # mag/day
 
 # Same-visit duplicate detections (e.g. two ZTF alerts ~40s apart) have a
@@ -72,8 +73,16 @@ def max_rate_mag_per_day(rows, min_dt_days=DEFAULT_MIN_DT_DAYS):
     return best
 
 
+def has_crossmatch(h5file, objid):
+    """True if the object has a ZTF or LSST/Rubin crossmatch lightcurve."""
+    cm = h5file[objid].get("crossmatch")
+    if cm is None:
+        return False
+    return "ztf" in cm or "lsst" in cm
+
+
 def find_fast_transients(h5_path: pathlib.Path, threshold: float, min_dt_days: float = DEFAULT_MIN_DT_DAYS):
-    """Return a list of (objid, rate, row_a, row_b) for objects at/above threshold."""
+    """Return a list of (objid, rate, row_a, row_b, crossmatched) for objects at/above threshold."""
     with h5py.File(h5_path, "r") as h5file:
         objids = sorted(k for k in h5file.keys() if k != "catalog")
 
@@ -85,7 +94,7 @@ def find_fast_transients(h5_path: pathlib.Path, threshold: float, min_dt_days: f
                 continue
             rate, row_a, row_b = result
             if rate >= threshold:
-                candidates.append((objid, rate, row_a, row_b))
+                candidates.append((objid, rate, row_a, row_b, has_crossmatch(h5file, objid)))
 
     return candidates
 
@@ -98,6 +107,9 @@ def main():
                          help="Master H5 file to read from.")
     parser.add_argument("--output", type=pathlib.Path, default=DEFAULT_OUTPUT,
                          help="Output text file of qualifying objids, one per line.")
+    parser.add_argument("--crossmatch-output", type=pathlib.Path, default=DEFAULT_CROSSMATCH_OUTPUT,
+                         help="Output text file of qualifying objids that also have a "
+                              "ZTF/Rubin crossmatch, one per line.")
     parser.add_argument("--threshold", type=float, default=DEFAULT_THRESHOLD,
                          help="Minimum |mag/day| rate to qualify (default: 0.1).")
     parser.add_argument("--min-dt-days", type=float, default=DEFAULT_MIN_DT_DAYS,
@@ -111,11 +123,20 @@ def main():
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with open(args.output, "w") as f:
-        for objid, rate, row_a, row_b in candidates:
+        for objid, rate, row_a, row_b, crossmatched in candidates:
+            f.write(objid + "\n")
+
+    crossmatched_candidates = [c for c in candidates if c[4]]
+    args.crossmatch_output.parent.mkdir(parents=True, exist_ok=True)
+    with open(args.crossmatch_output, "w") as f:
+        for objid, rate, row_a, row_b, crossmatched in crossmatched_candidates:
             f.write(objid + "\n")
 
     logger.info(f"{len(candidates)} objects at/above {args.threshold} mag/day -> {args.output}")
-    for objid, rate, row_a, row_b in candidates[:20]:
+    logger.info(
+        f"{len(crossmatched_candidates)} of those have a ZTF/Rubin crossmatch -> {args.crossmatch_output}"
+    )
+    for objid, rate, row_a, row_b, crossmatched in candidates[:20]:
         logger.info(
             f"  {objid}: {rate:.3f} mag/day "
             f"({row_a['band']}/{row_a['survey']} -> {row_b['band']}/{row_b['survey']}, "
