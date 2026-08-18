@@ -41,7 +41,7 @@ DEFAULT_FAVORITES_FILE = DATA_DIR / "favorite_sources.txt"
 app = FastAPI(title="tidez scanner")
 
 # Set by main() before uvicorn.run(); read by the request handlers below.
-STATE = {"h5_path": DEFAULT_H5, "favorites_file": DEFAULT_FAVORITES_FILE}
+STATE = {"h5_path": DEFAULT_H5, "favorites_file": DEFAULT_FAVORITES_FILE, "good_only": False}
 
 
 def _json_safe(value):
@@ -85,10 +85,13 @@ def api_lightcurve(objid: str):
     with h5py.File(STATE["h5_path"], "r") as h5file:
         if objid not in h5file:
             raise HTTPException(status_code=404, detail=f"objid not found: {objid}")
-        rows = load_object_rows(h5file, objid)
+        rows = load_object_rows(h5file, objid, good_only=STATE["good_only"])
         title_suffix = crossmatch_title_suffix(h5file, objid)
         ra = float(h5file[objid].attrs["ra"])
         dec = float(h5file[objid].attrs["dec"])
+        cm = h5file[objid].get("crossmatch")
+        ztf_id = str(cm["ztf"].attrs["objectId"]) if cm is not None and "ztf" in cm else None
+        lsst_id = str(cm["lsst"].attrs["objectId"]) if cm is not None and "lsst" in cm else None
 
     jd_first = first_detection_jd(rows) if rows else None
 
@@ -96,6 +99,8 @@ def api_lightcurve(objid: str):
         "objid": objid,
         "ra": ra,
         "dec": dec,
+        "ztf_id": ztf_id,
+        "lsst_id": lsst_id,
         "title_suffix": title_suffix,
         "rows": _sanitize_rows(rows),
         "jd_first": jd_first,
@@ -148,12 +153,20 @@ def main():
                          help="Text file to append favorited objids to.")
     parser.add_argument("--host", type=str, default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
+    parser.add_argument("--good-only", action="store_true",
+                         help="Plot only DECam epochs with STATUS_FPHOT == 'p' (good "
+                              "subtraction); ZTF/LSST crossmatch points are always shown "
+                              "when present. Default: plot all DECam epochs.")
     args = parser.parse_args()
 
     STATE["h5_path"] = args.h5
     STATE["favorites_file"] = args.favorites_file
+    STATE["good_only"] = args.good_only
 
-    logger.info(f"Serving {args.h5} at http://{args.host}:{args.port}")
+    logger.info(
+        f"Serving {args.h5} at http://{args.host}:{args.port}"
+        f"{' (DECam: good-only, STATUS_FPHOT==p)' if args.good_only else ''}"
+    )
     uvicorn.run(app, host=args.host, port=args.port)
 
 

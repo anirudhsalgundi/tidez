@@ -53,15 +53,19 @@ SURVEY_STYLE = {
 }
 
 
-def _decam_rows(h5file, objid):
+def _decam_rows(h5file, objid, good_only=False):
+    """good_only=True keeps only STATUS_FPHOT == 'p' (SNR>~5.8, good subtraction)
+    epochs, dropping 'q' (marginal) and 'm' (non-detection) rows entirely."""
     rows = []
     lc = h5file[objid]["lightcurve"][:]
     for epoch_idx, row in enumerate(lc):
         band = row["FILTER"].decode("ascii").strip()
         if not band or band == "N/A":
             continue
-        jd = float(row["MJD_OBS"]) + MJD_TO_JD_OFFSET
         status = row["STATUS_FPHOT"].decode("ascii").strip()
+        if good_only and status != "p":
+            continue
+        jd = float(row["MJD_OBS"]) + MJD_TO_JD_OFFSET
         detected = row["STATUS_FPHOT"] in DECAM_DETECTED_STATUSES
         rows.append({
             "jd": jd,
@@ -113,8 +117,10 @@ def crossmatch_title_suffix(h5file, objid):
     return ("  |  " + ", ".join(parts)) if parts else ""
 
 
-def load_object_rows(h5file, objid):
-    rows = _decam_rows(h5file, objid)
+def load_object_rows(h5file, objid, good_only=False):
+    """good_only=True restricts DECam points to STATUS_FPHOT == 'p' (good
+    subtraction); ZTF/LSST crossmatch rows are always included as-is."""
+    rows = _decam_rows(h5file, objid, good_only=good_only)
     rows += _crossmatch_rows(h5file, objid, "ztf", "ZTF")
     rows += _crossmatch_rows(h5file, objid, "lsst", "LSST")
     return rows
