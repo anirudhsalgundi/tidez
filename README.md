@@ -90,6 +90,17 @@ Run these against the master H5 after `build_h5.py`. Each one only
 processes objects that don't already have its group, so re-running after
 appending new objects to the H5 is cheap — only the new ones get queried.
 
+Resumability is tracked via a small checkpoint text file per script
+(`data/boom_progress.txt`, `data/milliquas_progress.txt`,
+`data/legacy_survey_progress.txt` — override with `--progress-file`), not
+by re-scanning the whole H5 every run. At tens of thousands of objects,
+checking "is this done?" against the H5 directly means one HDF5 metadata
+lookup per object, which gets slow on networked/parallel filesystems (e.g.
+Bridges2's Ocean) — the checkpoint file makes a re-run's resumability
+check a single fast file read instead. If a checkpoint file is missing
+(first run, or deleted), the script falls back to scanning the H5 once
+(with a progress bar) and rebuilds it.
+
 **ZTF / LSST (via BOOM alert broker)**
 ```
 uv run python -m tidez.crossmatch_boom --radius-arcsec 5

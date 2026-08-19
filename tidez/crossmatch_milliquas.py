@@ -43,6 +43,7 @@ import requests
 from tqdm import tqdm
 
 from tidez.logger import get_logger
+from tidez.progress import append_progress, load_or_bootstrap_progress
 
 logger = get_logger("crossmatch_milliquas")
 
@@ -54,6 +55,7 @@ XMATCH_URL = "http://cdsxmatch.u-strasbg.fr/xmatch/api/v1/sync"
 DEFAULT_MILLIQUAS_CATALOG = "vizier:VII/294/catalog"
 DEFAULT_RADIUS_ARCSEC = 3.0
 DEFAULT_CHUNK_SIZE = 5000
+DEFAULT_PROGRESS_FILE = DATA_DIR / "milliquas_progress.txt"
 REQUEST_TIMEOUT = 120
 MAX_RETRIES = 3
 
@@ -131,13 +133,14 @@ def run(
     catalog: str = DEFAULT_MILLIQUAS_CATALOG,
     chunk_size: int = DEFAULT_CHUNK_SIZE,
     limit: int = None,
+    progress_file: pathlib.Path = DEFAULT_PROGRESS_FILE,
 ):
     with h5py.File(h5_path, "a") as h5file:
         objids = sorted(k for k in h5file.keys() if k != "catalog")
         if limit is not None:
             objids = objids[:limit]
 
-        already_done = {objid for objid in objids if "milliquas" in h5file[objid]}
+        already_done = load_or_bootstrap_progress(progress_file, h5file, objids, "milliquas", logger)
         todo = [objid for objid in objids if objid not in already_done]
         logger.info(
             f"{len(objids)} objects in {h5_path}; "
@@ -166,6 +169,7 @@ def run(
                     n_matched += 1
 
             h5file.flush()
+            append_progress(progress_file, chunk_objids)
             logger.info(f"Flushed after chunk {i}/{len(chunks)} (processed={n_processed}, matched={n_matched})")
 
     logger.info(
@@ -190,9 +194,12 @@ def main():
                          help="Objects per X-Match request (default: 5000).")
     parser.add_argument("--limit", type=int, default=None,
                          help="Only process the first N objects (for testing).")
+    parser.add_argument("--progress-file", type=pathlib.Path, default=DEFAULT_PROGRESS_FILE,
+                         help="Checkpoint file tracking already-processed objids, for fast "
+                              "resumability on large H5 files (default: data/milliquas_progress.txt).")
     args = parser.parse_args()
 
-    run(args.h5, args.radius_arcsec, args.catalog, args.chunk_size, args.limit)
+    run(args.h5, args.radius_arcsec, args.catalog, args.chunk_size, args.limit, args.progress_file)
 
 
 if __name__ == "__main__":

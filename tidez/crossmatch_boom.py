@@ -48,6 +48,7 @@ import astropy.units as u
 from tqdm import tqdm
 
 from tidez.logger import get_logger
+from tidez.progress import append_progress, load_or_bootstrap_progress
 
 logger = get_logger("crossmatch_boom")
 
@@ -56,6 +57,7 @@ DATA_DIR = PROJECT_ROOT / "data"
 
 DEFAULT_H5 = DATA_DIR / "tidez_master.h5"
 DEFAULT_CROSSMATCH_LIST = DATA_DIR / "boom_crossmatches.txt"
+DEFAULT_PROGRESS_FILE = DATA_DIR / "boom_progress.txt"
 DEFAULT_RADIUS_ARCSEC = 5.0
 REQUEST_TIMEOUT = 30
 MAX_RETRIES = 3
@@ -242,10 +244,10 @@ def crossmatch_batch(h5file, batch_objids, radius_arcsec):
     """Cone search one batch of objects against every survey (one BOOM
     request per survey, covering the whole batch) and write results.
 
-    Returns (n_processed, n_failed). On a network failure for a survey, the
-    *entire* batch is skipped for that call (no partial /crossmatch groups
-    are created) so a re-run retries the whole batch cleanly, matching the
-    per-object resumability of the old code.
+    Returns (n_processed, n_failed, matched_objids). On a network failure
+    for a survey, the *entire* batch is skipped for that call (no partial
+    /crossmatch groups are created) so a re-run retries the whole batch
+    cleanly, matching the per-object resumability of the old code.
     """
     coords = {
         objid: (float(h5file[objid].attrs["ra"]), float(h5file[objid].attrs["dec"]))
@@ -258,31 +260,38 @@ def crossmatch_batch(h5file, batch_objids, radius_arcsec):
             alerts_by_survey[survey] = cone_search_batch(coords, survey, radius_arcsec)
         except Exception:
             logger.error(f"Failed to batch-crossmatch {len(batch_objids)} objects:\n{traceback.format_exc()}")
-            return 0, len(batch_objids)
+            return 0, len(batch_objids), []
 
+    matched_objids = []
     for objid in batch_objids:
         ra, dec = coords[objid]
         cm_group = h5file[objid].create_group("crossmatch")
         cm_group.attrs["radius_arcsec"] = radius_arcsec
+        any_match = False
         for survey in SURVEY_CATALOGS:
-            write_survey_match(h5file, objid, ra, dec, survey, alerts_by_survey[survey].get(objid, []))
+            alerts = alerts_by_survey[survey].get(objid, [])
+            write_survey_match(h5file, objid, ra, dec, survey, alerts)
+            any_match = any_match or bool(alerts)
+        if any_match:
+            matched_objids.append(objid)
 
-    return len(batch_objids), 0
-
-
-def _has_any_match(h5file, objid):
-    if "crossmatch" not in h5file[objid]:
-        return False
-    return len(h5file[objid]["crossmatch"].keys()) > 0
+    return len(batch_objids), 0, matched_objids
 
 
-def run(h5_path: pathlib.Path, radius_arcsec: float, output_list: pathlib.Path, limit: int = None):
+def run(
+    h5_path: pathlib.Path,
+    radius_arcsec: float,
+    output_list: pathlib.Path,
+    limit: int = None,
+    progress_file: pathlib.Path = DEFAULT_PROGRESS_FILE,
+):
+    matched_objids = []
     with h5py.File(h5_path, "a") as h5file:
         objids = [k for k in h5file.keys() if k != "catalog"]
         if limit is not None:
             objids = objids[:limit]
 
-        already_done = {objid for objid in objids if "crossmatch" in h5file[objid]}
+        already_done = load_or_bootstrap_progress(progress_file, h5file, objids, "crossmatch", logger)
         todo = [objid for objid in objids if objid not in already_done]
         logger.info(
             f"{len(objids)} objects in {h5_path}; "
@@ -298,11 +307,14 @@ def run(h5_path: pathlib.Path, radius_arcsec: float, output_list: pathlib.Path, 
         for i, batch in enumerate(pbar, start=1):
             pbar.set_postfix_str(f"batch {i}/{len(batches)} ({n_processed}/{len(todo)} objects)")
 
-            processed, failed = crossmatch_batch(h5file, batch, radius_arcsec)
+            processed, failed, batch_matched = crossmatch_batch(h5file, batch, radius_arcsec)
             n_processed += processed
             n_failed += failed
+            matched_objids.extend(batch_matched)
 
             h5file.flush()
+            if processed > 0:
+                append_progress(progress_file, batch)
             logger.info(
                 f"Flushed after batch {i}/{len(batches)} "
                 f"(processed={n_processed}, skipped={n_skipped}, failed={n_failed})"
@@ -311,19 +323,19 @@ def run(h5_path: pathlib.Path, radius_arcsec: float, output_list: pathlib.Path, 
             if i < len(batches):
                 time.sleep(SLEEP_BETWEEN_BATCHES)
 
-        matched_objids = [objid for objid in objids if _has_any_match(h5file, objid)]
-
     output_list.parent.mkdir(parents=True, exist_ok=True)
-    with open(output_list, "w") as f:
+    with open(output_list, "a" if already_done else "w") as f:
         for objid in matched_objids:
             f.write(objid + "\n")
+    with open(output_list) as f:
+        total_matches = sum(1 for line in f if line.strip())
 
     logger.info(
         f"Done. processed={n_processed}, skipped={n_skipped}, failed={n_failed}, "
         f"total_objects={len(objids)}"
     )
     logger.info(
-        f"Found {len(matched_objids)} crossmatches. "
+        f"Found {len(matched_objids)} new crossmatches this run ({total_matches} total). "
         f"Objids with crossmatches written to {output_list}"
     )
 
@@ -338,9 +350,12 @@ def main():
                          help="Text file to write objids that have >=1 BOOM crossmatch to.")
     parser.add_argument("--limit", type=int, default=None,
                          help="Only process the first N objects (for testing).")
+    parser.add_argument("--progress-file", type=pathlib.Path, default=DEFAULT_PROGRESS_FILE,
+                         help="Checkpoint file tracking already-processed objids, for fast "
+                              "resumability on large H5 files (default: data/boom_progress.txt).")
     args = parser.parse_args()
 
-    run(args.h5, args.radius_arcsec, args.output_list, args.limit)
+    run(args.h5, args.radius_arcsec, args.output_list, args.limit, args.progress_file)
 
 
 if __name__ == "__main__":
