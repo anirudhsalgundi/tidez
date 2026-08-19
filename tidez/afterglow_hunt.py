@@ -2,12 +2,18 @@
 A three-stage filter aimed specifically at orphan afterglows, TDEs, GRB
 afterglows, FBOTs, and other fast extragalactic transients -- built on top
 of transient_hunt.py's quality gates, with two extra rejection stages meant
-to cut the AGN contamination that otherwise dominates the sample:
+to cut the AGN contamination that otherwise dominates the sample.
+
+This assumes crossmatch_milliquas.py (and ideally crossmatch_boom.py, for
+the crossmatched-output split) have already been run against every object
+in the H5. If you haven't crossmatched everything yet and want to avoid
+paying that cost on objects that would fail the rate cut anyway, use
+find_real_fast_transients.py instead -- it runs the rate cut first and
+only crossmatches the survivors.
 
   Stage 1 -- Milliquas veto: reject any object with a Milliquas catalog
-  match (run crossmatch_milliquas.py first; objects that haven't been
-  crossmatched yet are passed through with a warning rather than silently
-  rejected or accepted).
+  match (objects that haven't been crossmatched yet are passed through
+  with a warning rather than silently rejected or accepted).
 
   Stage 2 -- Stochastic-variability veto: reject objects whose lightcurve
   looks like ongoing AGN-style variability rather than a single transient
@@ -35,17 +41,12 @@ to cut the AGN contamination that otherwise dominates the sample:
   floor, minimum baseline, minimum amplitude, significance, anti-blip
   check) still apply pair-by-pair before a rate is trusted.
 
-Run crossmatch_milliquas.py (and ideally crossmatch_boom.py, for the
-crossmatched-output split) before this.
-
 Usage:
     python -m tidez.afterglow_hunt
     python -m tidez.afterglow_hunt --h5 data/tidez_master.h5 --rise-threshold 0.5 --fade-threshold 0.2
 """
 
 import argparse
-import itertools
-import math
 import pathlib
 
 import h5py
@@ -53,6 +54,26 @@ from tqdm import tqdm
 
 from tidez.logger import get_logger
 from tidez.plot_lightcurve import DEFAULT_H5, load_object_rows
+from tidez.transient_filters import (
+    DEFAULT_BLIP_REVERT_TOL,
+    DEFAULT_BLIP_WINDOW_DAYS,
+    DEFAULT_EVENT_WINDOW_DAYS,
+    DEFAULT_FADE_THRESHOLD,
+    DEFAULT_MAX_DT_DAYS,
+    DEFAULT_MAX_PERSISTENT_FRAC,
+    DEFAULT_MAX_REVERSAL_FRAC,
+    DEFAULT_MIN_DELTA_MAG,
+    DEFAULT_MIN_DETECTIONS,
+    DEFAULT_MIN_DT_DAYS,
+    DEFAULT_MIN_OUTSIDE_POINTS,
+    DEFAULT_MIN_SNR,
+    DEFAULT_RISE_THRESHOLD,
+    DEFAULT_SIGMA_THRESH,
+    find_best_rate_pair,
+    has_crossmatch,
+    is_stochastic,
+    milliquas_matched,
+)
 
 logger = get_logger("afterglow_hunt")
 
@@ -60,104 +81,6 @@ PROJECT_ROOT = pathlib.Path(__file__).resolve().parent.parent
 DATA_DIR = PROJECT_ROOT / "data"
 DEFAULT_OUTPUT = DATA_DIR / "afterglow_candidates.txt"
 DEFAULT_CROSSMATCH_OUTPUT = DATA_DIR / "afterglow_candidates_crossmatched.txt"
-
-# Stage 3 (asymmetric rate cut)
-DEFAULT_RISE_THRESHOLD = 0.5  # mag/day, brightening
-DEFAULT_FADE_THRESHOLD = 0.2  # mag/day, dimming
-
-# Per-pair quality cuts, same rationale/defaults as transient_hunt.py
-DEFAULT_MIN_DT_DAYS = 0.25
-DEFAULT_MAX_DT_DAYS = None
-DEFAULT_MIN_DELTA_MAG = 0.3
-DEFAULT_SIGMA_THRESH = 4.0
-DEFAULT_MIN_SNR = 5.0
-DEFAULT_BLIP_WINDOW_DAYS = 3.0
-DEFAULT_BLIP_REVERT_TOL = 0.15
-DEFAULT_MIN_DETECTIONS = 3
-
-# Stage 2 (stochastic-variability veto)
-DEFAULT_MAX_REVERSAL_FRAC = 0.4
-DEFAULT_MAX_PERSISTENT_FRAC = 0.5
-DEFAULT_EVENT_WINDOW_DAYS = 7.0
-DEFAULT_MIN_OUTSIDE_POINTS = 4
-
-
-def has_crossmatch(h5file, objid):
-    """True if the object has a ZTF or LSST/Rubin crossmatch lightcurve."""
-    cm = h5file[objid].get("crossmatch")
-    if cm is None:
-        return False
-    return "ztf" in cm or "lsst" in cm
-
-
-_warned_no_milliquas = False
-
-
-def milliquas_matched(h5file, objid):
-    """True/False if crossmatch_milliquas.py has run for this object, else
-    None (unknown -- treated as "not matched" by the caller, with a
-    one-time warning) if it hasn't been crossmatched yet."""
-    global _warned_no_milliquas
-    group = h5file[objid].get("milliquas")
-    if group is None:
-        if not _warned_no_milliquas:
-            logger.warning(
-                "No Milliquas crossmatch found (run crossmatch_milliquas.py first) -- "
-                "objects without a crossmatch are passed through this veto, not rejected."
-            )
-            _warned_no_milliquas = True
-        return None
-    return bool(group.attrs["matched"])
-
-
-def _is_blip(band_rows, a, b, window_days, revert_tol):
-    idx_b = band_rows.index(b)
-    if idx_b + 1 >= len(band_rows):
-        return False
-    c = band_rows[idx_b + 1]
-    if (c["jd"] - b["jd"]) > window_days:
-        return False
-    return abs(c["mag"] - a["mag"]) < revert_tol
-
-
-def _reversal_fraction(band_rows):
-    """Fraction of consecutive delta-mag sign flips in a time-sorted band
-    timeline. None if too few points to judge (<4, i.e. <3 deltas)."""
-    if len(band_rows) < 4:
-        return None
-    deltas = [band_rows[i + 1]["mag"] - band_rows[i]["mag"] for i in range(len(band_rows) - 1)]
-    reversals = sum(
-        1 for i in range(len(deltas) - 1)
-        if deltas[i] != 0 and deltas[i + 1] != 0 and (deltas[i] > 0) != (deltas[i + 1] > 0)
-    )
-    return reversals / (len(deltas) - 1)
-
-
-def _persistent_detection_fraction(all_rows, event_jd_lo, event_jd_hi, min_outside_points):
-    """Fraction of epochs outside [event_jd_lo, event_jd_hi] (across all
-    bands/surveys) that are detections rather than upper limits. None if
-    fewer than min_outside_points epochs fall outside the window."""
-    outside = [r for r in all_rows if not (event_jd_lo <= r["jd"] <= event_jd_hi)]
-    if len(outside) < min_outside_points:
-        return None
-    return sum(1 for r in outside if r["detected"]) / len(outside)
-
-
-def is_stochastic(all_rows, band_rows, event_a, event_b, max_reversal_frac, max_persistent_frac,
-                   event_window_days, min_outside_points):
-    """True if either stochastic-variability signal fires for this object's
-    best-rate band/event pair."""
-    reversal_frac = _reversal_fraction(band_rows)
-    if reversal_frac is not None and reversal_frac >= max_reversal_frac:
-        return True
-
-    event_jd_lo = event_a["jd"] - event_window_days
-    event_jd_hi = event_b["jd"] + event_window_days
-    persistent_frac = _persistent_detection_fraction(all_rows, event_jd_lo, event_jd_hi, min_outside_points)
-    if persistent_frac is not None and persistent_frac >= max_persistent_frac:
-        return True
-
-    return False
 
 
 def find_afterglow_candidates(
@@ -190,7 +113,7 @@ def find_afterglow_candidates(
         candidates = []
         for objid in tqdm(objids, desc="Hunting for afterglow-like transients", unit="obj"):
             # Stage 1: Milliquas veto
-            if milliquas_matched(h5file, objid):
+            if milliquas_matched(h5file, objid, logger=logger):
                 stage_counts["milliquas_rejected"] += 1
                 continue
 
@@ -200,49 +123,11 @@ def find_afterglow_candidates(
                 stage_counts["no_rate_pair"] += 1
                 continue
 
-            # Stage 3 (quality cuts + asymmetric rate): find the best-scoring
-            # pair per object across all bands, same structure as
-            # transient_hunt.py but tracking rise/fade direction separately.
-            best = None  # (score, rate, direction, significance, band_rows, a, b)
-            for band, group in itertools.groupby(
-                sorted(detected, key=lambda r: (r["band"], r["jd"])), key=lambda r: r["band"]
-            ):
-                band_rows = sorted(group, key=lambda r: r["jd"])
-                for a, b in zip(band_rows, band_rows[1:]):
-                    dt = b["jd"] - a["jd"]
-                    if dt < min_dt_days:
-                        continue
-                    if max_dt_days is not None and dt > max_dt_days:
-                        continue
-
-                    signed_delta = b["mag"] - a["mag"]
-                    delta_mag = abs(signed_delta)
-                    if delta_mag < min_delta_mag:
-                        continue
-
-                    combined_err = math.sqrt(a["magerr"] ** 2 + b["magerr"] ** 2)
-                    significance = delta_mag / combined_err if combined_err > 0 else math.inf
-                    if significance < sigma_thresh:
-                        continue
-
-                    if a["survey"] == "DECam" and a["snr"] is not None and a["snr"] < min_snr:
-                        continue
-                    if b["survey"] == "DECam" and b["snr"] is not None and b["snr"] < min_snr:
-                        continue
-
-                    rate = delta_mag / dt
-                    direction = "rise" if signed_delta < 0 else "fade"
-                    threshold = rise_threshold if direction == "rise" else fade_threshold
-                    if rate < threshold:
-                        continue
-
-                    if _is_blip(band_rows, a, b, blip_window_days, blip_revert_tol):
-                        continue
-
-                    score = rate * significance
-                    if best is None or score > best[0]:
-                        best = (score, rate, direction, significance, band_rows, a, b)
-
+            # Stage 3 (quality cuts + asymmetric rate)
+            best = find_best_rate_pair(
+                detected, rise_threshold, fade_threshold, min_dt_days, max_dt_days,
+                min_delta_mag, sigma_thresh, min_snr, blip_window_days, blip_revert_tol,
+            )
             if best is None:
                 stage_counts["no_rate_pair"] += 1
                 continue
