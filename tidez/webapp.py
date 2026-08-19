@@ -19,10 +19,11 @@ import math
 import h5py
 import uvicorn
 from astropy.time import Time
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 
 from tidez.cutouts import get_object_cutouts
+from tidez.legacy_cutout import get_object_legacy_cutout
 from tidez.logger import get_logger
 from tidez.plot_lightcurve import (
     DEFAULT_H5,
@@ -39,6 +40,17 @@ TEMPLATES_DIR = PROJECT_ROOT / "templates"
 DEFAULT_FAVORITES_FILE = DATA_DIR / "favorite_sources.txt"
 
 app = FastAPI(title="tidez scanner")
+
+
+# Browsers will happily cache GET /api/... responses (no explicit headers
+# say otherwise), which silently serves stale lightcurve/objects data across
+# server restarts (e.g. toggling --good-only). Force no-store on every
+# response so a restart always takes effect immediately.
+@app.middleware("http")
+async def no_cache(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 # Set by main() before uvicorn.run(); read by the request handlers below.
 STATE = {"h5_path": DEFAULT_H5, "favorites_file": DEFAULT_FAVORITES_FILE, "good_only": False}
@@ -117,6 +129,17 @@ def api_cutout(objid: str, epoch_idx: int):
             return get_object_cutouts(h5file, objid, epoch_idx)
         except IndexError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/api/objects/{objid}/legacy-cutout")
+def api_legacy_cutout(objid: str):
+    with h5py.File(STATE["h5_path"], "r") as h5file:
+        if objid not in h5file:
+            raise HTTPException(status_code=404, detail=f"objid not found: {objid}")
+        cutout = get_object_legacy_cutout(h5file, objid)
+        if cutout is None:
+            raise HTTPException(status_code=404, detail=f"no Legacy Survey cutout stored for {objid}")
+        return cutout
 
 
 @app.get("/api/favorites")

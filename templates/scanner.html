@@ -48,8 +48,21 @@
     .id-item button { padding: 3px 9px; font-size: 0.85em; }
     .id-item button.copied { background: #2f6b3f; }
 
-    main { padding: 20px 24px; max-width: 1200px; margin: 0 auto; }
-    #lightcurve { width: 100%; height: 480px; }
+    main { padding: 20px 24px; max-width: 1400px; margin: 0 auto; }
+    #plotRow { display: flex; gap: 16px; align-items: flex-start; }
+    #lightcurve { flex: 1; min-width: 0; height: 480px; }
+
+    #legacyPanel {
+        background: #22242c; border: 1px solid #33353e; border-radius: 8px;
+        padding: 10px; text-align: center; width: 220px; flex-shrink: 0;
+    }
+    #legacyPanel .label {
+        font-size: 0.8em; text-transform: uppercase; letter-spacing: 0.5px;
+        color: #9a9ca6; margin-bottom: 6px;
+    }
+    #legacyPanel img { width: 100%; border-radius: 4px; background: #000; }
+    #legacyPanel .meta { font-size: 0.75em; color: #6a6d78; margin-top: 6px; }
+    #legacyPanel .missing { color: #6a6d78; font-size: 0.85em; padding: 40px 0; }
 
     #cutouts {
         display: flex; gap: 16px; margin-top: 16px; justify-content: center;
@@ -104,7 +117,13 @@
 </div>
 
 <main>
-    <div id="lightcurve"></div>
+    <div id="plotRow">
+        <div id="lightcurve"></div>
+        <div id="legacyPanel">
+            <div class="label">Legacy Survey</div>
+            <div id="legacy-content" class="missing">Loading…</div>
+        </div>
+    </div>
     <div id="cutout-hint">Click a DECam point on the lightcurve to load its cutouts.</div>
     <div id="cutouts" style="display:none;">
         <div class="cutout-panel"><div class="label">Template</div><img id="cutout-template"></div>
@@ -169,6 +188,58 @@ function niceStep(range, targetTicks = 6) {
     return step * mag;
 }
 
+// Decimal places to show for a given tick step, so zooming into an hour-
+// scale window doesn't collapse every tick to the same rounded integer day.
+function decimalsForStep(step) {
+    if (step >= 1) return 0;
+    if (step >= 0.1) return 1;
+    if (step >= 0.01) return 2;
+    return 3;
+}
+
+// Recompute tick positions/labels for whatever x-range is currently
+// visible (full extent on first draw, or the zoomed-in sub-range after a
+// plotly_relayout). totalSpan converts "days since first detection" (the
+// underlying x data) to "days ago" for the bottom axis's labels.
+function computeTicks(rangeMin, rangeMax, totalSpan) {
+    const step = niceStep(rangeMax - rangeMin);
+    const decimals = decimalsForStep(step);
+    const start = Math.ceil(rangeMin / step) * step;
+    const tickvals = [];
+    for (let v = start; v <= rangeMax + step / 2; v += step) tickvals.push(v);
+    const ticktextDaysAgo = tickvals.map(v => (totalSpan - v).toFixed(decimals));
+    const ticktextSinceFirst = tickvals.map(v => v.toFixed(decimals));
+    return { tickvals, ticktextDaysAgo, ticktextSinceFirst };
+}
+
+// State for the current plot's full range / span, read by the
+// plotly_relayout handler below to rebuild ticks on zoom/pan/reset.
+let plotTotalSpan = 0;
+let plotFullRange = [0, 1];
+
+let relayoutListenerAttached = false;
+function attachRelayoutListener() {
+    if (relayoutListenerAttached) return;
+    relayoutListenerAttached = true;
+    lcDiv.on("plotly_relayout", (evt) => {
+        let rMin, rMax;
+        if (evt["xaxis.range[0]"] !== undefined && evt["xaxis.range[1]"] !== undefined) {
+            rMin = evt["xaxis.range[0]"];
+            rMax = evt["xaxis.range[1]"];
+        } else if (evt["xaxis.autorange"] || evt["xaxis.range"] !== undefined) {
+            // Double-click reset (or programmatic full-range reset).
+            [rMin, rMax] = plotFullRange;
+        } else {
+            return;  // some other relayout (e.g. our own tick update below); ignore
+        }
+        const { tickvals, ticktextDaysAgo, ticktextSinceFirst } = computeTicks(rMin, rMax, plotTotalSpan);
+        Plotly.relayout(lcDiv, {
+            "xaxis.tickvals": tickvals, "xaxis.ticktext": ticktextDaysAgo,
+            "xaxis2.tickvals": tickvals, "xaxis2.ticktext": ticktextSinceFirst,
+        });
+    });
+}
+
 async function loadFavorites() {
     const res = await fetch("/api/favorites");
     const data = await res.json();
@@ -202,6 +273,30 @@ function updateFavButton(objid) {
 function resetCutouts() {
     cutoutsDiv.style.display = "none";
     cutoutHint.style.display = "block";
+}
+
+const legacyContent = document.getElementById("legacy-content");
+
+async function loadLegacyCutout(objid) {
+    legacyContent.className = "missing";
+    legacyContent.textContent = "Loading…";
+    const res = await fetch(`/api/objects/${encodeURIComponent(objid)}/legacy-cutout`);
+    if (currentObjid !== objid) return;  // object changed while this was in flight
+    if (!res.ok) {
+        legacyContent.className = "missing";
+        legacyContent.textContent = "No Legacy Survey cutout stored for this object.";
+        return;
+    }
+    const data = await res.json();
+    legacyContent.className = "";
+    legacyContent.innerHTML = "";
+    const img = document.createElement("img");
+    img.src = `data:image/png;base64,${data.image}`;
+    const meta = document.createElement("div");
+    meta.className = "meta";
+    meta.textContent = `${data.layer}, ${data.pixscale}"/px`;
+    legacyContent.appendChild(img);
+    legacyContent.appendChild(meta);
 }
 
 function buildTraces(rows) {
@@ -264,6 +359,7 @@ async function drawCurrent() {
     if (token !== renderToken) return;  // a newer Prev/Next click already superseded this one
     currentObjid = objid;
     updateIdBar(data);
+    loadLegacyCutout(objid);
 
     if (!data.rows.length) {
         Plotly.react(lcDiv, [], {
@@ -283,11 +379,9 @@ async function drawCurrent() {
     const pad = (xMax - xMin) * 0.04 || 1;
     const range = [xMin - pad, xMax + pad];
 
-    const step = niceStep(xMax - xMin);
-    const tickvals = [];
-    for (let v = 0; v <= xMax + step / 2; v += step) tickvals.push(v);
-    const ticktextDaysAgo = tickvals.map(v => Math.round(totalSpan - v));
-    const ticktextSinceFirst = tickvals.map(v => Math.round(v));
+    plotTotalSpan = totalSpan;
+    plotFullRange = range;
+    const { tickvals, ticktextDaysAgo, ticktextSinceFirst } = computeTicks(range[0], range[1], totalSpan);
 
     // xaxis2 mirrors xaxis' range (via `matches`) to draw a second, top-side
     // tick row over the same physical positions with different labels.
@@ -315,6 +409,7 @@ async function drawCurrent() {
     };
     Plotly.react(lcDiv, traces, layout, { responsive: true });
     attachClickListener();
+    attachRelayoutListener();
 }
 
 // Plotly.react (unlike newPlot) updates the existing plot in place and
