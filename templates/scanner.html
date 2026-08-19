@@ -5,130 +5,185 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>tidez scanner</title>
 <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
+    :root {
+        --bg: #0b0d12;
+        --surface: #12141b;
+        --surface-2: #191c25;
+        --border: #262a36;
+        --text: #e8eaf0;
+        --text-dim: #868da0;
+        --text-faint: #4c515f;
+        --accent: #4fb8e8;
+        --accent-dim: rgba(79, 184, 232, 0.14);
+        --gold: #e0ac3f;
+        --gold-dim: rgba(224, 172, 63, 0.16);
+        --radius: 10px;
+        --font-display: 'Space Grotesk', -apple-system, BlinkMacSystemFont, sans-serif;
+        --font-ui: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
     * { box-sizing: border-box; }
     body {
         margin: 0;
-        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-        background: #1b1d23;
-        color: #e8e8ea;
+        font-family: var(--font-ui);
+        background: var(--bg);
+        color: var(--text);
     }
+
     header {
-        padding: 14px 24px;
-        background: #22242c;
-        border-bottom: 1px solid #33353e;
+        padding: 12px 24px;
+        background: var(--surface);
+        border-bottom: 1px solid var(--border);
         display: flex;
         align-items: center;
-        gap: 16px;
+        gap: 18px;
         flex-wrap: wrap;
     }
-    header h1 { font-size: 1.1em; margin: 0; font-weight: 600; }
+    .wordmark {
+        font-family: var(--font-display);
+        font-size: 1.05em;
+        font-weight: 600;
+        letter-spacing: -0.01em;
+        color: var(--text);
+        display: flex;
+        align-items: baseline;
+        gap: 7px;
+        margin-right: 4px;
+    }
+    .wordmark .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 6px var(--accent); }
+
     .filter-box { display: flex; align-items: center; gap: 8px; }
-    .filter-box input {
-        background: #14151a; color: #e8e8ea; border: 1px solid #3a3d47;
-        border-radius: 6px; padding: 6px 10px; font-size: 0.9em; width: 260px;
+    input {
+        background: var(--surface-2); color: var(--text); border: 1px solid var(--border);
+        border-radius: 7px; padding: 7px 11px; font-size: 0.85em; width: 250px;
+        font-family: var(--font-mono);
+    }
+    input:focus, button:focus-visible {
+        outline: none; border-color: var(--accent);
+        box-shadow: 0 0 0 3px var(--accent-dim);
     }
     button {
-        background: #3a3d47; color: #e8e8ea; border: none; border-radius: 6px;
-        padding: 7px 14px; font-size: 0.9em; cursor: pointer;
+        background: var(--surface-2); color: var(--text); border: 1px solid var(--border);
+        border-radius: 7px; padding: 7px 13px; font-size: 0.85em; cursor: pointer;
+        transition: background 0.12s, border-color 0.12s;
     }
-    button:hover { background: #4a4d59; }
-    button.fav { background: #4a3d1f; }
-    button.fav.active { background: #b58900; color: #1b1d23; font-weight: 600; }
-    #status { color: #9a9ca6; font-size: 0.85em; }
+    button:hover { background: #21242f; border-color: #333748; }
+    button.fav.active { background: var(--gold-dim); border-color: var(--gold); color: var(--gold); font-weight: 600; }
+    .nav-group { display: flex; gap: 6px; }
+    #status {
+        color: var(--text-dim); font-size: 0.85em; font-family: var(--font-mono);
+        margin-left: auto; white-space: nowrap;
+    }
 
     #idBar {
-        padding: 8px 24px; background: #20222a; border-bottom: 1px solid #33353e;
-        display: flex; gap: 24px; flex-wrap: wrap; font-size: 0.85em; align-items: center;
+        padding: 9px 24px; background: var(--bg); border-bottom: 1px solid var(--border);
+        display: flex; gap: 10px; flex-wrap: wrap; align-items: center;
     }
-    .id-item { display: flex; align-items: center; gap: 6px; }
-    .id-item .id-label { color: #9a9ca6; }
-    .id-item .id-value { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-    .id-item .id-value.empty { color: #5a5d68; }
-    .id-item button { padding: 3px 9px; font-size: 0.85em; }
-    .id-item button.copied { background: #2f6b3f; }
+    .chip {
+        display: flex; align-items: center; gap: 7px;
+        background: var(--surface); border: 1px solid var(--border); border-radius: 7px;
+        padding: 5px 10px 5px 6px; cursor: pointer; font-size: 0.82em;
+        transition: border-color 0.12s, background 0.12s;
+    }
+    .chip:hover { border-color: #363b4a; background: var(--surface-2); }
+    .chip:active { transform: translateY(1px); }
+    .chip .swatch { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+    .chip .chip-label { color: var(--text-faint); text-transform: uppercase; letter-spacing: 0.04em; font-size: 0.82em; }
+    .chip .chip-value { font-family: var(--font-mono); color: var(--text); }
+    .chip .chip-value.empty { color: var(--text-faint); }
+    .chip.copied { border-color: var(--accent); background: var(--accent-dim); }
+    .chip.copied .chip-value { color: var(--accent); }
 
-    main { padding: 20px 24px; max-width: 1400px; margin: 0 auto; }
-    #plotRow { display: flex; gap: 16px; align-items: flex-start; }
-    #lightcurve { flex: 1; min-width: 0; height: 480px; }
+    main { padding: 22px 24px 32px; max-width: 1180px; margin: 0 auto; }
 
-    #legacyPanel {
-        background: #22242c; border: 1px solid #33353e; border-radius: 8px;
-        padding: 10px; text-align: center; width: 220px; flex-shrink: 0;
+    #plot-card {
+        background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+        padding: 6px 10px 2px;
     }
-    #legacyPanel .label {
-        font-size: 0.8em; text-transform: uppercase; letter-spacing: 0.5px;
-        color: #9a9ca6; margin-bottom: 6px;
-    }
-    #legacyPanel img { width: 100%; border-radius: 4px; background: #000; }
-    #legacyPanel .meta { font-size: 0.75em; color: #6a6d78; margin-top: 6px; }
-    #legacyPanel .missing { color: #6a6d78; font-size: 0.85em; padding: 40px 0; }
+    #lightcurve { width: 100%; height: 380px; }
 
-    #cutouts {
-        display: flex; gap: 16px; margin-top: 16px; justify-content: center;
+    .section-label {
+        font-family: var(--font-display); font-size: 0.78em; font-weight: 600;
+        text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-faint);
+        margin: 26px 2px 10px;
     }
-    .cutout-panel {
-        background: #22242c; border: 1px solid #33353e; border-radius: 8px;
-        padding: 10px; text-align: center; width: 220px;
+
+    #imagingGrid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
+    .img-card {
+        background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+        padding: 10px; text-align: center;
     }
-    .cutout-panel .label {
-        font-size: 0.8em; text-transform: uppercase; letter-spacing: 0.5px;
-        color: #9a9ca6; margin-bottom: 6px;
+    .img-card .label {
+        font-size: 0.72em; text-transform: uppercase; letter-spacing: 0.06em;
+        color: var(--text-faint); margin-bottom: 8px; font-weight: 600;
     }
-    .cutout-panel img { width: 100%; border-radius: 4px; background: #000; }
-    #cutout-hint { text-align: center; color: #9a9ca6; margin-top: 16px; font-size: 0.9em; }
+    .img-card .frame {
+        aspect-ratio: 1; border-radius: 6px; background: #000;
+        display: flex; align-items: center; justify-content: center; overflow: hidden;
+    }
+    .img-card .frame img { width: 100%; height: 100%; object-fit: contain; }
+    .img-card .frame .placeholder { color: var(--text-faint); font-size: 0.75em; padding: 0 12px; }
+    .img-card .meta { font-size: 0.7em; color: var(--text-faint); margin-top: 7px; font-family: var(--font-mono); }
+    .img-card .viewer-link { display: block; margin-top: 9px; font-size: 0.72em; color: var(--accent); text-decoration: none; }
+    .img-card .viewer-link:hover { text-decoration: underline; }
+
+    @media (max-width: 860px) {
+        #imagingGrid { grid-template-columns: repeat(2, 1fr); }
+    }
 </style>
 </head>
 <body>
 
 <header>
-    <h1>tidez scanner</h1>
+    <div class="wordmark"><span class="dot"></span>tidez scanner</div>
     <div class="filter-box">
-        <input id="objidsFile" type="text" placeholder="objids file (e.g. boom_crossmatches.txt) - blank = all">
+        <input id="objidsFile" type="text" placeholder="objids file or objid — blank = all">
         <button id="applyFilter">Apply</button>
     </div>
-    <button id="prevBtn">&lt; Prev</button>
-    <button id="nextBtn">Next &gt;</button>
+    <div class="nav-group">
+        <button id="prevBtn">‹ Prev</button>
+        <button id="nextBtn">Next ›</button>
+    </div>
     <button id="favBtn" class="fav">☆ Favorite</button>
     <span id="status"></span>
 </header>
 
 <div id="idBar">
-    <div class="id-item">
-        <span class="id-label">DECam:</span>
-        <span class="id-value" id="decamId">—</span>
-        <button class="copyBtn" data-target="decamId">Copy</button>
-    </div>
-    <div class="id-item">
-        <span class="id-label">ZTF:</span>
-        <span class="id-value" id="ztfId">—</span>
-        <button class="copyBtn" data-target="ztfId">Copy</button>
-    </div>
-    <div class="id-item">
-        <span class="id-label">Rubin:</span>
-        <span class="id-value" id="rubinId">—</span>
-        <button class="copyBtn" data-target="rubinId">Copy</button>
-    </div>
-    <div class="id-item">
-        <span class="id-label">RA, Dec:</span>
-        <span class="id-value" id="radecId">—</span>
-        <button class="copyBtn" data-target="radecId">Copy</button>
-    </div>
+    <div class="chip" data-target="decamId"><span class="swatch" style="background:#4fb8e8"></span><span class="chip-label">DECam</span><span class="chip-value" id="decamId">—</span></div>
+    <div class="chip" data-target="ztfId"><span class="swatch" style="background:#b06bff"></span><span class="chip-label">ZTF</span><span class="chip-value" id="ztfId">—</span></div>
+    <div class="chip" data-target="rubinId"><span class="swatch" style="background:#3ddc71"></span><span class="chip-label">Rubin</span><span class="chip-value" id="rubinId">—</span></div>
+    <div class="chip" data-target="radecId"><span class="swatch" style="background:#e0ac3f"></span><span class="chip-label">RA, Dec</span><span class="chip-value" id="radecId">—</span></div>
 </div>
 
 <main>
-    <div id="plotRow">
+    <div id="plot-card">
         <div id="lightcurve"></div>
-        <div id="legacyPanel">
-            <div class="label">Legacy Survey</div>
-            <div id="legacy-content" class="missing">Loading…</div>
-        </div>
     </div>
-    <div id="cutout-hint">Click a DECam point on the lightcurve to load its cutouts.</div>
-    <div id="cutouts" style="display:none;">
-        <div class="cutout-panel"><div class="label">Template</div><img id="cutout-template"></div>
-        <div class="cutout-panel"><div class="label">Science</div><img id="cutout-science"></div>
-        <div class="cutout-panel"><div class="label">Diff</div><img id="cutout-diff"></div>
+
+    <div class="section-label">Imaging</div>
+    <div id="imagingGrid">
+        <div class="img-card">
+            <div class="label">Legacy Survey</div>
+            <div class="frame" id="legacy-frame"><span class="placeholder">Loading…</span></div>
+            <div class="meta" id="legacy-meta"></div>
+            <a id="legacyViewerLink" class="viewer-link" href="#" target="_blank" rel="noopener">Open in Legacy Survey ↗</a>
+        </div>
+        <div class="img-card">
+            <div class="label">Template</div>
+            <div class="frame" id="template-frame"><span class="placeholder">Click a DECam point</span></div>
+        </div>
+        <div class="img-card">
+            <div class="label">Science</div>
+            <div class="frame" id="science-frame"><span class="placeholder">Click a DECam point</span></div>
+        </div>
+        <div class="img-card">
+            <div class="label">Diff</div>
+            <div class="frame" id="diff-frame"><span class="placeholder">Click a DECam point</span></div>
+        </div>
     </div>
 </main>
 
@@ -152,32 +207,32 @@ let renderToken = 0;
 const statusEl = document.getElementById("status");
 const favBtn = document.getElementById("favBtn");
 const lcDiv = document.getElementById("lightcurve");
-const cutoutsDiv = document.getElementById("cutouts");
-const cutoutHint = document.getElementById("cutout-hint");
 
-function setIdField(id, value) {
+function setChip(id, value) {
     const el = document.getElementById(id);
     el.textContent = value || "—";
     el.classList.toggle("empty", !value);
 }
 
 function updateIdBar(data) {
-    setIdField("decamId", data.objid);
-    setIdField("ztfId", data.ztf_id);
-    setIdField("rubinId", data.lsst_id);
-    setIdField("radecId", `${data.ra}, ${data.dec}`);
+    setChip("decamId", data.objid);
+    setChip("ztfId", data.ztf_id);
+    setChip("rubinId", data.lsst_id);
+    setChip("radecId", `${data.ra}, ${data.dec}`);
+
+    const viewerUrl = `https://www.legacysurvey.org/viewer?ra=${data.ra}&dec=${data.dec}&layer=ls-dr10&zoom=16&mark=${data.ra},${data.dec}`;
+    document.getElementById("legacyViewerLink").href = viewerUrl;
 }
 
 document.getElementById("idBar").addEventListener("click", async (evt) => {
-    const btn = evt.target.closest(".copyBtn");
-    if (!btn) return;
-    const value = document.getElementById(btn.dataset.target).textContent;
+    const chip = evt.target.closest(".chip");
+    if (!chip) return;
+    const valueEl = document.getElementById(chip.dataset.target);
+    const value = valueEl.textContent;
     if (!value || value === "—") return;
     await navigator.clipboard.writeText(value);
-    btn.classList.add("copied");
-    const original = btn.textContent;
-    btn.textContent = "Copied!";
-    setTimeout(() => { btn.classList.remove("copied"); btn.textContent = original; }, 1000);
+    chip.classList.add("copied");
+    setTimeout(() => chip.classList.remove("copied"), 900);
 });
 
 function niceStep(range, targetTicks = 6) {
@@ -271,32 +326,29 @@ function updateFavButton(objid) {
 }
 
 function resetCutouts() {
-    cutoutsDiv.style.display = "none";
-    cutoutHint.style.display = "block";
+    for (const key of ["template", "science", "diff"]) {
+        document.getElementById(`${key}-frame`).innerHTML = '<span class="placeholder">Click a DECam point</span>';
+    }
 }
 
-const legacyContent = document.getElementById("legacy-content");
+const legacyFrame = document.getElementById("legacy-frame");
+const legacyMeta = document.getElementById("legacy-meta");
 
 async function loadLegacyCutout(objid) {
-    legacyContent.className = "missing";
-    legacyContent.textContent = "Loading…";
+    legacyFrame.innerHTML = '<span class="placeholder">Loading…</span>';
+    legacyMeta.textContent = "";
     const res = await fetch(`/api/objects/${encodeURIComponent(objid)}/legacy-cutout`);
     if (currentObjid !== objid) return;  // object changed while this was in flight
     if (!res.ok) {
-        legacyContent.className = "missing";
-        legacyContent.textContent = "No Legacy Survey cutout stored for this object.";
+        legacyFrame.innerHTML = '<span class="placeholder">No cutout stored</span>';
         return;
     }
     const data = await res.json();
-    legacyContent.className = "";
-    legacyContent.innerHTML = "";
+    legacyFrame.innerHTML = "";
     const img = document.createElement("img");
     img.src = `data:image/png;base64,${data.image}`;
-    const meta = document.createElement("div");
-    meta.className = "meta";
-    meta.textContent = `${data.layer}, ${data.pixscale}"/px`;
-    legacyContent.appendChild(img);
-    legacyContent.appendChild(meta);
+    legacyFrame.appendChild(img);
+    legacyMeta.textContent = `${data.layer}, ${data.pixscale}"/px`;
 }
 
 function buildTraces(rows) {
@@ -330,7 +382,7 @@ function buildTraces(rows) {
                 x: xs, y: ys, customdata, text,
                 error_y: { type: "data", array: group.rows.map(r => r.magerr), visible: true, color },
                 mode: "markers", type: "scatter", name: label,
-                marker: { color, symbol, size: 9, line: { width: 1, color: "#14151a" } },
+                marker: { color, symbol, size: 9, line: { width: 1, color: "#0b0d12" } },
                 hovertemplate: `${label}<br>mag: %{y:.3f}<br>%{text}<extra></extra>`,
             });
         } else {
@@ -351,7 +403,7 @@ async function drawCurrent() {
     resetCutouts();
     const objid = objids[index];
     updateFavButton(objid);
-    statusEl.textContent = `[${index + 1}/${objids.length}] ${objid}`;
+    statusEl.textContent = `[${index + 1}/${objids.length}]  ${objid}`;
 
     const res = await fetch(`/api/objects/${encodeURIComponent(objid)}/lightcurve`);
     const data = await res.json();
@@ -363,8 +415,9 @@ async function drawCurrent() {
 
     if (!data.rows.length) {
         Plotly.react(lcDiv, [], {
-            title: `${objid}${data.title_suffix} (no lightcurve data)`,
-            paper_bgcolor: "#1b1d23", plot_bgcolor: "#1b1d23", font: { color: "#e8e8ea" },
+            paper_bgcolor: "#12141b", plot_bgcolor: "#12141b", font: { color: "#e8eaf0" },
+            annotations: [{ text: "No lightcurve data", showarrow: false, font: { size: 14, color: "#868da0" },
+                             xref: "paper", yref: "paper", x: 0.5, y: 0.5 }],
         });
         attachClickListener();
         return;
@@ -391,23 +444,25 @@ async function drawCurrent() {
     });
 
     const layout = {
-        title: { text: `${objid}${data.title_suffix}`, y: 0.99, yanchor: "top" },
         xaxis: {
-            title: "Days ago", range, tickvals, ticktext: ticktextDaysAgo,
-            color: "#e8e8ea", gridcolor: "#33353e",
+            title: { text: "Days ago", font: { size: 11 } }, range, tickvals, ticktext: ticktextDaysAgo,
+            color: "#868da0", gridcolor: "#1e212b", tickfont: { size: 10 },
         },
         xaxis2: {
             overlaying: "x", matches: "x", side: "top",
             tickvals, ticktext: ticktextSinceFirst,
-            title: { text: "Days since first detection", standoff: 10 },
-            color: "#e8e8ea", gridcolor: "transparent",
+            title: { text: "Days since first detection", font: { size: 11 }, standoff: 8 },
+            color: "#868da0", gridcolor: "transparent", tickfont: { size: 10 },
         },
-        yaxis: { title: "Magnitude", autorange: "reversed", color: "#e8e8ea", gridcolor: "#33353e" },
-        paper_bgcolor: "#1b1d23", plot_bgcolor: "#1b1d23", font: { color: "#e8e8ea" },
-        legend: { font: { size: 10 } },
-        margin: { t: 140 },
+        yaxis: {
+            title: { text: "Magnitude", font: { size: 11 } }, autorange: "reversed",
+            color: "#868da0", gridcolor: "#1e212b", tickfont: { size: 10 },
+        },
+        paper_bgcolor: "#12141b", plot_bgcolor: "#12141b", font: { color: "#e8eaf0", family: "-apple-system, sans-serif" },
+        legend: { font: { size: 9.5, color: "#868da0" }, bgcolor: "rgba(0,0,0,0)", itemwidth: 30 },
+        margin: { t: 44, r: 150, l: 56, b: 46 },
     };
-    Plotly.react(lcDiv, traces, layout, { responsive: true });
+    Plotly.react(lcDiv, traces, layout, { responsive: true, displaylogo: false });
     attachClickListener();
     attachRelayoutListener();
 }
@@ -424,9 +479,9 @@ function attachClickListener() {
         const point = evt.points[0];
         const epochIdx = point.customdata;
         if (currentObjid === null || epochIdx === null || epochIdx === undefined) {
-            cutoutHint.textContent = "No cutout available for this point (not a DECam epoch).";
-            cutoutHint.style.display = "block";
-            cutoutsDiv.style.display = "none";
+            for (const key of ["template", "science", "diff"]) {
+                document.getElementById(`${key}-frame`).innerHTML = '<span class="placeholder">Not a DECam epoch</span>';
+            }
             return;
         }
         await loadCutouts(currentObjid, epochIdx);
@@ -437,11 +492,13 @@ async function loadCutouts(objid, epochIdx) {
     const res = await fetch(`/api/objects/${encodeURIComponent(objid)}/cutout/${epochIdx}`);
     if (!res.ok) return;
     const data = await res.json();
-    document.getElementById("cutout-template").src = `data:image/png;base64,${data.template}`;
-    document.getElementById("cutout-science").src = `data:image/png;base64,${data.science}`;
-    document.getElementById("cutout-diff").src = `data:image/png;base64,${data.diff}`;
-    cutoutHint.style.display = "none";
-    cutoutsDiv.style.display = "flex";
+    for (const [key, b64] of [["template", data.template], ["science", data.science], ["diff", data.diff]]) {
+        const frame = document.getElementById(`${key}-frame`);
+        frame.innerHTML = "";
+        const img = document.createElement("img");
+        img.src = `data:image/png;base64,${b64}`;
+        frame.appendChild(img);
+    }
 }
 
 document.getElementById("prevBtn").onclick = () => {

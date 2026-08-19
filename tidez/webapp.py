@@ -53,7 +53,7 @@ async def no_cache(request: Request, call_next):
     return response
 
 # Set by main() before uvicorn.run(); read by the request handlers below.
-STATE = {"h5_path": DEFAULT_H5, "favorites_file": DEFAULT_FAVORITES_FILE, "good_only": False}
+STATE = {"h5_path": DEFAULT_H5, "favorites_file": DEFAULT_FAVORITES_FILE, "good_only": True}
 
 
 def _json_safe(value):
@@ -176,19 +176,20 @@ def main():
                          help="Text file to append favorited objids to.")
     parser.add_argument("--host", type=str, default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
-    parser.add_argument("--good-only", action="store_true",
-                         help="Plot only DECam epochs with STATUS_FPHOT == 'p' (good "
-                              "subtraction); ZTF/LSST crossmatch points are always shown "
-                              "when present. Default: plot all DECam epochs.")
+    parser.add_argument("--plot-all", action="store_true",
+                         help="Plot all DECam epochs regardless of STATUS_FPHOT ('p' good, "
+                              "'q' marginal, 'm' non-detection). Default: only 'p' (good "
+                              "subtraction) DECam epochs are plotted; ZTF/LSST crossmatch "
+                              "points are always shown when present either way.")
     args = parser.parse_args()
 
     STATE["h5_path"] = args.h5
     STATE["favorites_file"] = args.favorites_file
-    STATE["good_only"] = args.good_only
+    STATE["good_only"] = not args.plot_all
 
     logger.info(
         f"Serving {args.h5} at http://{args.host}:{args.port}"
-        f"{' (DECam: good-only, STATUS_FPHOT==p)' if args.good_only else ''}"
+        f"{' (DECam: all epochs, incl. q/m)' if args.plot_all else ' (DECam: good-only, STATUS_FPHOT==p)'}"
     )
     uvicorn.run(app, host=args.host, port=args.port)
 
