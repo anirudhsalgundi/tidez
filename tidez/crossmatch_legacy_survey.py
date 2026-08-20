@@ -86,6 +86,7 @@ def run(
     limit: int = None,
     progress_file: pathlib.Path = DEFAULT_PROGRESS_FILE,
 ):
+    logger.info(f"Opening {h5_path} ...")
     with h5py.File(h5_path, "a") as h5file:
         objids = sorted(k for k in h5file.keys() if k != "catalog")
         if limit is not None:

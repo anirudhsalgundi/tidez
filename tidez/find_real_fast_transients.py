@@ -1,24 +1,31 @@
 """
 End-to-end real-fast-transient pipeline that only pays for crossmatching on
 objects that already look interesting, instead of crossmatching everything
-in the master H5 up front:
+in the master H5 up front.
+
+By default (--enable-agn-veto not set) this runs two stages:
 
   Stage 1 -- Rate cut (cheap, no crossmatch data needed): the same
   quality-gated, asymmetric rise/fade rate cut as afterglow_hunt.py
   (transient_filters.find_best_rate_pair), run against every object's
   DECam('p'-only)+ZTF+LSST lightcurve.
 
-  Stage 2 -- Milliquas crossmatch, but only for stage-1 survivors that
-  don't already have a /milliquas group. Same bulk CDS X-Match approach as
+  Stage 4 -- Legacy Survey cutout fetch for stage-1 survivors that don't
+  already have a /legacy_survey group. Same approach as
+  crossmatch_legacy_survey.py.
+
+Pass --enable-agn-veto to also run the Milliquas/stochastic-variability
+AGN-rejection stages in between (currently disabled by default -- under
+investigation for a possible concurrent-access data consistency issue on
+Bridges2's filesystem when other processes touch the H5 at the same time):
+
+  Stage 2 -- Milliquas crossmatch, only for stage-1 survivors that don't
+  already have a /milliquas group. Same bulk CDS X-Match approach as
   crossmatch_milliquas.py.
 
   Stage 3 -- AGN veto on stage-1 survivors: reject a Milliquas match, or
   stochastic-variability signals (transient_filters.is_stochastic) --
   same logic as afterglow_hunt.py's stages 1+2.
-
-  Stage 4 -- Legacy Survey cutout fetch, but only for the *final*
-  survivors (post-AGN-veto) that don't already have a /legacy_survey
-  group. Same approach as crossmatch_legacy_survey.py.
 
 This assumes crossmatch_boom.py has already been run against the full H5
 separately -- ZTF/LSST crossmatching isn't part of this pipeline, only used
@@ -31,6 +38,7 @@ ZTF/Rubin crossmatch (from a prior crossmatch_boom.py run).
 Usage:
     python -m tidez.find_real_fast_transients
     python -m tidez.find_real_fast_transients --h5 data/tidez_master.h5 --rise-threshold 0.5
+    python -m tidez.find_real_fast_transients --enable-agn-veto
 """
 
 import argparse
@@ -109,15 +117,18 @@ def run(
     legacy_pixscale: float = DEFAULT_PIXSCALE,
     legacy_size_pix: int = DEFAULT_SIZE_PIX,
     legacy_sleep: float = DEFAULT_SLEEP,
+    enable_agn_veto: bool = False,
 ):
     stage_counts = {
         "total": 0, "rate_cut_passed": 0,
         "milliquas_rejected": 0, "stochastic_rejected": 0, "final_passed": 0,
     }
 
+    logger.info(f"Opening {h5_path} ...")
     with h5py.File(h5_path, "a") as h5file:
         objids = sorted(k for k in h5file.keys() if k != "catalog")
         stage_counts["total"] = len(objids)
+        logger.info(f"{len(objids)} objects in {h5_path}.")
 
         # Stage 1: rate cut on every object -- no crossmatch data needed.
         rate_survivors = []
@@ -138,52 +149,64 @@ def run(
         stage_counts["rate_cut_passed"] = len(rate_survivors)
         logger.info(f"Stage 1/4 (rate cut): {len(rate_survivors)}/{len(objids)} objects passed.")
 
-        # Stage 2: Milliquas crossmatch, only for survivors lacking it.
-        need_milliquas = [c for c in rate_survivors if "milliquas" not in h5file[c[0]]]
-        logger.info(
-            f"Stage 2/4 (Milliquas): crossmatching {len(need_milliquas)} rate-cut survivors "
-            f"({len(rate_survivors) - len(need_milliquas)} already crossmatched)."
-        )
-        chunks = [
-            need_milliquas[i:i + milliquas_chunk_size]
-            for i in range(0, len(need_milliquas), milliquas_chunk_size)
-        ]
-        for chunk in tqdm(chunks, desc="Stage 2/4: Milliquas crossmatch", unit="chunk"):
-            coord_rows = [
-                (c[0], float(h5file[c[0]].attrs["ra"]), float(h5file[c[0]].attrs["dec"]))
-                for c in chunk
+        if enable_agn_veto:
+            # Stage 2: Milliquas crossmatch, only for survivors lacking it.
+            need_milliquas = [
+                c for c in tqdm(rate_survivors, desc="Checking existing /milliquas groups", unit="obj")
+                if "milliquas" not in h5file[c[0]]
             ]
-            try:
-                matches = _xmatch_chunk(coord_rows, milliquas_radius_arcsec, milliquas_catalog)
-            except Exception:
-                logger.error(f"Failed to crossmatch a Milliquas chunk of {len(chunk)} objects", exc_info=True)
-                continue
-            for c in chunk:
-                write_milliquas_match(h5file, c[0], matches.get(c[0]))
-            h5file.flush()
+            logger.info(
+                f"Stage 2/4 (Milliquas): crossmatching {len(need_milliquas)} rate-cut survivors "
+                f"({len(rate_survivors) - len(need_milliquas)} already crossmatched)."
+            )
+            chunks = [
+                need_milliquas[i:i + milliquas_chunk_size]
+                for i in range(0, len(need_milliquas), milliquas_chunk_size)
+            ]
+            for i, chunk in enumerate(tqdm(chunks, desc="Stage 2/4: Milliquas crossmatch", unit="chunk"), start=1):
+                coord_rows = [
+                    (c[0], float(h5file[c[0]].attrs["ra"]), float(h5file[c[0]].attrs["dec"]))
+                    for c in chunk
+                ]
+                logger.info(f"Requesting Milliquas chunk {i}/{len(chunks)} ({len(chunk)} objects) from CDS X-Match ...")
+                try:
+                    matches = _xmatch_chunk(coord_rows, milliquas_radius_arcsec, milliquas_catalog)
+                except Exception:
+                    logger.error(f"Failed to crossmatch a Milliquas chunk of {len(chunk)} objects", exc_info=True)
+                    continue
+                for c in chunk:
+                    write_milliquas_match(h5file, c[0], matches.get(c[0]))
+                h5file.flush()
 
-        # Stage 3: AGN veto (Milliquas match, or stochastic variability).
-        final_survivors = []
-        for c in rate_survivors:
-            objid, score, rate, direction, significance, band_rows, row_a, row_b, rows = c
-            if milliquas_matched(h5file, objid, logger=logger):
-                stage_counts["milliquas_rejected"] += 1
-                continue
-            if is_stochastic(rows, band_rows, row_a, row_b, max_reversal_frac, max_persistent_frac,
-                              event_window_days, min_outside_points):
-                stage_counts["stochastic_rejected"] += 1
-                continue
-            final_survivors.append(c)
+            # Stage 3: AGN veto (Milliquas match, or stochastic variability).
+            final_survivors = []
+            for c in tqdm(rate_survivors, desc="Stage 3/4: AGN veto", unit="obj"):
+                objid, score, rate, direction, significance, band_rows, row_a, row_b, rows = c
+                if milliquas_matched(h5file, objid, logger=logger):
+                    stage_counts["milliquas_rejected"] += 1
+                    continue
+                if is_stochastic(rows, band_rows, row_a, row_b, max_reversal_frac, max_persistent_frac,
+                                  event_window_days, min_outside_points):
+                    stage_counts["stochastic_rejected"] += 1
+                    continue
+                final_survivors.append(c)
 
-        stage_counts["final_passed"] = len(final_survivors)
-        logger.info(
-            f"Stage 3/4 (AGN veto): {stage_counts['milliquas_rejected']} rejected (Milliquas match), "
-            f"{stage_counts['stochastic_rejected']} rejected (stochastic variability), "
-            f"{len(final_survivors)} passed."
-        )
+            stage_counts["final_passed"] = len(final_survivors)
+            logger.info(
+                f"Stage 3/4 (AGN veto): {stage_counts['milliquas_rejected']} rejected (Milliquas match), "
+                f"{stage_counts['stochastic_rejected']} rejected (stochastic variability), "
+                f"{len(final_survivors)} passed."
+            )
+        else:
+            logger.info("Stages 2/3 (Milliquas crossmatch + AGN veto) skipped (--enable-agn-veto not set).")
+            final_survivors = rate_survivors
+            stage_counts["final_passed"] = len(final_survivors)
 
         # Stage 4: Legacy Survey cutouts, only for final survivors lacking one.
-        need_legacy = [c for c in final_survivors if "legacy_survey" not in h5file[c[0]]]
+        need_legacy = [
+            c for c in tqdm(final_survivors, desc="Checking existing /legacy_survey groups", unit="obj")
+            if "legacy_survey" not in h5file[c[0]]
+        ]
         logger.info(
             f"Stage 4/4 (Legacy Survey): fetching cutouts for {len(need_legacy)} final survivors "
             f"({len(final_survivors) - len(need_legacy)} already fetched)."
@@ -203,7 +226,10 @@ def run(
         h5file.flush()
 
         final_survivors.sort(key=lambda c: c[1], reverse=True)  # score descending
-        crossmatched_objids = {c[0] for c in final_survivors if has_crossmatch(h5file, c[0])}
+        crossmatched_objids = {
+            c[0] for c in tqdm(final_survivors, desc="Checking ZTF/Rubin crossmatch", unit="obj")
+            if has_crossmatch(h5file, c[0])
+        }
 
     return final_survivors, crossmatched_objids, stage_counts, n_legacy_failed
 
@@ -267,6 +293,9 @@ def main():
                          help="Legacy Survey cutout size in pixels (default: 150).")
     parser.add_argument("--legacy-sleep", type=float, default=DEFAULT_SLEEP,
                          help="Seconds to sleep between Legacy Survey requests (default: 0.2).")
+    parser.add_argument("--enable-agn-veto", action="store_true",
+                         help="Also run the Milliquas crossmatch + AGN veto (stages 2-3). Off by "
+                              "default: rate-cut survivors go straight to Legacy Survey crossmatch.")
     args = parser.parse_args()
 
     final_survivors, crossmatched_objids, stage_counts, n_legacy_failed = run(
@@ -292,6 +321,7 @@ def main():
         legacy_pixscale=args.legacy_pixscale,
         legacy_size_pix=args.legacy_size_pix,
         legacy_sleep=args.legacy_sleep,
+        enable_agn_veto=args.enable_agn_veto,
     )
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -305,9 +335,10 @@ def main():
             if c[0] in crossmatched_objids:
                 f.write(c[0] + "\n")
 
+    final_stage_label = "passed AGN veto (final)" if args.enable_agn_veto else "final (AGN veto skipped)"
     logger.info(
         f"Done. {stage_counts['total']} scanned -> {stage_counts['rate_cut_passed']} passed rate cut -> "
-        f"{stage_counts['final_passed']} passed AGN veto (final) -> {args.output} "
+        f"{stage_counts['final_passed']} {final_stage_label} -> {args.output} "
         f"({len(crossmatched_objids)} with ZTF/Rubin crossmatch -> {args.crossmatch_output}). "
         f"Legacy Survey fetch failures: {n_legacy_failed}."
     )

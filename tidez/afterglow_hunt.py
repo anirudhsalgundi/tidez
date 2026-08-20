@@ -106,6 +106,7 @@ def find_afterglow_candidates(
     were dropped at each stage, for the summary log."""
     stage_counts = {"total": 0, "milliquas_rejected": 0, "stochastic_rejected": 0, "no_rate_pair": 0, "passed": 0}
 
+    logger.info(f"Opening {h5_path} ...")
     with h5py.File(h5_path, "r") as h5file:
         objids = sorted(k for k in h5file.keys() if k != "catalog")
         stage_counts["total"] = len(objids)

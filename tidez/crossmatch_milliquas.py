@@ -135,6 +135,7 @@ def run(
     limit: int = None,
     progress_file: pathlib.Path = DEFAULT_PROGRESS_FILE,
 ):
+    logger.info(f"Opening {h5_path} ...")
     with h5py.File(h5_path, "a") as h5file:
         objids = sorted(k for k in h5file.keys() if k != "catalog")
         if limit is not None:
@@ -155,6 +156,7 @@ def run(
                 (objid, float(h5file[objid].attrs["ra"]), float(h5file[objid].attrs["dec"]))
                 for objid in chunk_objids
             ]
+            logger.info(f"Requesting chunk {i}/{len(chunks)} ({len(chunk_objids)} objects) from CDS X-Match ...")
             try:
                 matches = _xmatch_chunk(rows, radius_arcsec, catalog)
             except Exception:

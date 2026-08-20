@@ -109,8 +109,10 @@ def find_transients(
     """Return [(objid, rate, score, significance, row_a, row_b, crossmatched)]
     for objects with a pair passing every quality cut, best-scoring pair
     per object, sorted by score descending."""
+    logger.info(f"Opening {h5_path} ...")
     with h5py.File(h5_path, "r") as h5file:
         objids = sorted(k for k in h5file.keys() if k != "catalog")
+        logger.info(f"{len(objids)} objects in {h5_path}.")
 
         candidates = []
         for objid in tqdm(objids, desc="Hunting for real fast transients", unit="obj"):

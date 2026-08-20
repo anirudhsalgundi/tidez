@@ -256,6 +256,7 @@ def crossmatch_batch(h5file, batch_objids, radius_arcsec):
 
     alerts_by_survey = {}
     for survey in SURVEY_CATALOGS:
+        logger.info(f"Requesting BOOM cone search: {survey} ({len(batch_objids)} objects) ...")
         try:
             alerts_by_survey[survey] = cone_search_batch(coords, survey, radius_arcsec)
         except Exception:
@@ -286,6 +287,7 @@ def run(
     progress_file: pathlib.Path = DEFAULT_PROGRESS_FILE,
 ):
     matched_objids = []
+    logger.info(f"Opening {h5_path} ...")
     with h5py.File(h5_path, "a") as h5file:
         objids = [k for k in h5file.keys() if k != "catalog"]
         if limit is not None:

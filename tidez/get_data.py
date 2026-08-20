@@ -2,6 +2,8 @@ import os
 import re
 import pathlib
 
+from tqdm import tqdm
+
 from tidez.logger import get_logger
 logger = get_logger("get_data")
 
@@ -14,6 +16,11 @@ MAX_DETECTIONS_FILE = DATA_DIR / "max_detections_candidate_fits_files.txt"
 
 
 def find_candidate_fits_files():
+    logger.info(
+        f"Globbing for candidate FITS files under {DESIRT_DATA_DIR} "
+        "(recursive, no progress possible until it finishes -- this can take a while "
+        "on a large/networked filesystem)..."
+    )
     candidate_fits_files = list(DESIRT_DATA_DIR.glob("*/**/*.fits"))
     logger.info(f"Found {len(candidate_fits_files)} candidate FITS files.")
 
@@ -46,7 +53,7 @@ def write_max_detections_per_observation(candidate_fits_files):
     """
     best_per_observation = {}  # observation_id -> (n_detections, path)
 
-    for fits_file in candidate_fits_files:
+    for fits_file in tqdm(candidate_fits_files, desc="Picking max-detections file per observation", unit="file"):
         parsed = parse_fits_filename(fits_file)
         if parsed is None:
             continue
@@ -66,7 +73,7 @@ def write_max_detections_per_observation(candidate_fits_files):
 
 def total_size_bytes(file_paths):
     total = 0
-    for p in file_paths:
+    for p in tqdm(file_paths, desc="Computing total size", unit="file"):
         try:
             total += os.path.getsize(p)
         except OSError as e:
@@ -82,7 +89,7 @@ def main():
         f"picked {len(best_per_observation)} files (one max-detections file per unique observation ID)."
     )
     total_bytes = total_size_bytes(candidate_fits_files)
-    logger.info(f"Total size: {total_bytes / (1024**3):.2f} GB")    
+    logger.info(f"Total size: {total_bytes / (1024**3):.2f} GB")
 
 if __name__ == "__main__":
     main()

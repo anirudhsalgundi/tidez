@@ -40,10 +40,6 @@ BAND_COLORS = {
 
 MJD_TO_JD_OFFSET = 2400000.5
 
-# DECam STATUS_FPHOT: 'p' (SNR>~5.8) and 'q' (SNR>~3.2) treated as
-# detections; 'm' (SNR<~3) treated as a non-detection / upper limit.
-DECAM_DETECTED_STATUSES = {b"p", b"q"}
-
 # Marker shape + a survey-specific edge (not just color) so surveys stay
 # distinguishable even when the same band color overlaps.
 SURVEY_STYLE = {
@@ -53,9 +49,16 @@ SURVEY_STYLE = {
 }
 
 
-def _decam_rows(h5file, objid, good_only=False):
-    """good_only=True keeps only STATUS_FPHOT == 'p' (SNR>~5.8, good subtraction)
-    epochs, dropping 'q' (marginal) and 'm' (non-detection) rows entirely."""
+def _decam_rows(h5file, objid, good_only=True):
+    """Every DECam epoch is kept either way -- good_only only changes which
+    STATUS_FPHOT values count as a detection vs. an upper limit (plotted at
+    LIM_MAG5, populated for every epoch regardless of status):
+      good_only=True  (default): only 'p' (SNR>~5.8, good subtraction) counts
+                       as detected; 'q' (marginal) and 'm' (non-detection)
+                       both become upper limits.
+      good_only=False: 'p' and 'q' both count as detected; only 'm' becomes
+                       an upper limit.
+    """
     rows = []
     lc = h5file[objid]["lightcurve"][:]
     for epoch_idx, row in enumerate(lc):
@@ -63,10 +66,9 @@ def _decam_rows(h5file, objid, good_only=False):
         if not band or band == "N/A":
             continue
         status = row["STATUS_FPHOT"].decode("ascii").strip()
-        if good_only and status != "p":
-            continue
         jd = float(row["MJD_OBS"]) + MJD_TO_JD_OFFSET
-        detected = row["STATUS_FPHOT"] in DECAM_DETECTED_STATUSES
+        detected_statuses = {"p"} if good_only else {"p", "q"}
+        detected = status in detected_statuses
         rows.append({
             "jd": jd,
             "mag": float(row["MAG_FPHOT"]),
@@ -117,9 +119,10 @@ def crossmatch_title_suffix(h5file, objid):
     return ("  |  " + ", ".join(parts)) if parts else ""
 
 
-def load_object_rows(h5file, objid, good_only=False):
-    """good_only=True restricts DECam points to STATUS_FPHOT == 'p' (good
-    subtraction); ZTF/LSST crossmatch rows are always included as-is."""
+def load_object_rows(h5file, objid, good_only=True):
+    """Every DECam epoch is always included; good_only (default True)
+    controls only whether 'q' counts as a detection or an upper limit --
+    see _decam_rows. ZTF/LSST crossmatch rows are always included as-is."""
     rows = _decam_rows(h5file, objid, good_only=good_only)
     rows += _crossmatch_rows(h5file, objid, "ztf", "ZTF")
     rows += _crossmatch_rows(h5file, objid, "lsst", "LSST")

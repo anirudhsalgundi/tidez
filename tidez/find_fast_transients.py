@@ -83,8 +83,10 @@ def has_crossmatch(h5file, objid):
 
 def find_fast_transients(h5_path: pathlib.Path, threshold: float, min_dt_days: float = DEFAULT_MIN_DT_DAYS):
     """Return a list of (objid, rate, row_a, row_b, crossmatched) for objects at/above threshold."""
+    logger.info(f"Opening {h5_path} ...")
     with h5py.File(h5_path, "r") as h5file:
         objids = sorted(k for k in h5file.keys() if k != "catalog")
+        logger.info(f"{len(objids)} objects in {h5_path}.")
 
         candidates = []
         for objid in tqdm(objids, desc="Scanning for fast transients", unit="obj"):

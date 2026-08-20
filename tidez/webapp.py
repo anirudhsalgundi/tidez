@@ -177,20 +177,20 @@ def main():
     parser.add_argument("--host", type=str, default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--plot-all", action="store_true",
-                         help="Plot all DECam epochs regardless of STATUS_FPHOT ('p' good, "
-                              "'q' marginal, 'm' non-detection). Default: only 'p' (good "
-                              "subtraction) DECam epochs are plotted; ZTF/LSST crossmatch "
-                              "points are always shown when present either way.")
+                         help="Also count STATUS_FPHOT == 'q' (marginal) DECam epochs as "
+                              "detections, not just 'p' (good subtraction). Every DECam epoch "
+                              "is plotted either way ('m'/non-detection epochs always show as "
+                              "upper limits at LIM_MAG5) -- this flag only moves the boundary "
+                              "between 'plotted as a detection' and 'plotted as an upper limit'. "
+                              "ZTF/LSST crossmatch points are always shown when present either way.")
     args = parser.parse_args()
 
     STATE["h5_path"] = args.h5
     STATE["favorites_file"] = args.favorites_file
     STATE["good_only"] = not args.plot_all
 
-    logger.info(
-        f"Serving {args.h5} at http://{args.host}:{args.port}"
-        f"{' (DECam: all epochs, incl. q/m)' if args.plot_all else ' (DECam: good-only, STATUS_FPHOT==p)'}"
-    )
+    detection_mode = "DECam: 'p'+'q' count as detections" if args.plot_all else "DECam: only 'p' counts as detected, good-only"
+    logger.info(f"Serving {args.h5} at http://{args.host}:{args.port} ({detection_mode})")
     uvicorn.run(app, host=args.host, port=args.port)
 
 
