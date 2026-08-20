@@ -59,6 +59,7 @@ from tidez.transient_filters import (
     DEFAULT_BLIP_WINDOW_DAYS,
     DEFAULT_EVENT_WINDOW_DAYS,
     DEFAULT_FADE_THRESHOLD,
+    DEFAULT_MAX_BASELINE_DAYS,
     DEFAULT_MAX_DT_DAYS,
     DEFAULT_MAX_PERSISTENT_FRAC,
     DEFAULT_MAX_REVERSAL_FRAC,
@@ -69,6 +70,7 @@ from tidez.transient_filters import (
     DEFAULT_MIN_SNR,
     DEFAULT_RISE_THRESHOLD,
     DEFAULT_SIGMA_THRESH,
+    detection_span_days,
     find_best_rate_pair,
     has_crossmatch,
     is_stochastic,
@@ -99,12 +101,16 @@ def find_afterglow_candidates(
     max_persistent_frac: float = DEFAULT_MAX_PERSISTENT_FRAC,
     event_window_days: float = DEFAULT_EVENT_WINDOW_DAYS,
     min_outside_points: int = DEFAULT_MIN_OUTSIDE_POINTS,
+    max_baseline_days: float | None = DEFAULT_MAX_BASELINE_DAYS,
 ):
     """Return (candidates, stage_counts). candidates is a list of
     (objid, rate, direction, score, significance, row_a, row_b, crossmatched)
     sorted by score descending. stage_counts is a dict of how many objects
     were dropped at each stage, for the summary log."""
-    stage_counts = {"total": 0, "milliquas_rejected": 0, "stochastic_rejected": 0, "no_rate_pair": 0, "passed": 0}
+    stage_counts = {
+        "total": 0, "milliquas_rejected": 0, "too_old_rejected": 0,
+        "stochastic_rejected": 0, "no_rate_pair": 0, "passed": 0,
+    }
 
     logger.info(f"Opening {h5_path} ...")
     with h5py.File(h5_path, "r") as h5file:
@@ -122,6 +128,9 @@ def find_afterglow_candidates(
             detected = [r for r in rows if r["detected"]]
             if len(detected) < min_detections:
                 stage_counts["no_rate_pair"] += 1
+                continue
+            if max_baseline_days is not None and detection_span_days(detected) > max_baseline_days:
+                stage_counts["too_old_rejected"] += 1
                 continue
 
             # Stage 3 (quality cuts + asymmetric rate)
@@ -162,7 +171,7 @@ def main():
                          help="Output text file of qualifying objids that also have a "
                               "ZTF/Rubin crossmatch, one per line.")
     parser.add_argument("--rise-threshold", type=float, default=DEFAULT_RISE_THRESHOLD,
-                         help="Minimum brightening rate (mag/day) to qualify (default: 0.5).")
+                         help="Minimum brightening rate (mag/day) to qualify (default: 0.7).")
     parser.add_argument("--fade-threshold", type=float, default=DEFAULT_FADE_THRESHOLD,
                          help="Minimum fading rate (mag/day) to qualify (default: 0.2).")
     parser.add_argument("--min-dt-days", type=float, default=DEFAULT_MIN_DT_DAYS,
@@ -194,6 +203,12 @@ def main():
     parser.add_argument("--min-outside-points", type=int, default=DEFAULT_MIN_OUTSIDE_POINTS,
                          help="Minimum epochs required outside the event window before the "
                               "persistent-detection check is trusted (default: 4).")
+    parser.add_argument("--max-baseline-days", type=float, default=DEFAULT_MAX_BASELINE_DAYS,
+                         help="Reject objects detected over a longer span than this (default: "
+                              "200.0) -- looks like a long-lived variable, not a single fast "
+                              "transient event. Use --no-max-baseline to disable entirely.")
+    parser.add_argument("--no-max-baseline", action="store_true",
+                         help="Disable the max-baseline-days cut entirely.")
     args = parser.parse_args()
 
     candidates, stage_counts = find_afterglow_candidates(
@@ -208,6 +223,7 @@ def main():
         blip_window_days=args.blip_window_days,
         blip_revert_tol=args.blip_revert_tol,
         min_detections=args.min_detections,
+        max_baseline_days=None if args.no_max_baseline else args.max_baseline_days,
         max_reversal_frac=args.max_reversal_frac,
         max_persistent_frac=args.max_persistent_frac,
         event_window_days=args.event_window_days,
@@ -228,6 +244,7 @@ def main():
     logger.info(
         f"{stage_counts['total']} objects scanned -> "
         f"{stage_counts['milliquas_rejected']} rejected (Milliquas match), "
+        f"{stage_counts['too_old_rejected']} rejected (too long a detection span), "
         f"{stage_counts['stochastic_rejected']} rejected (stochastic variability), "
         f"{stage_counts['no_rate_pair']} had no qualifying rate pair, "
         f"{len(candidates)} passed -> {args.output}"

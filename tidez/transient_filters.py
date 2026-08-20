@@ -23,7 +23,7 @@ DEFAULT_BLIP_REVERT_TOL = 0.15
 DEFAULT_MIN_DETECTIONS = 3
 
 # Asymmetric rise/fade rate cut
-DEFAULT_RISE_THRESHOLD = 0.5  # mag/day, brightening
+DEFAULT_RISE_THRESHOLD = 0.7  # mag/day, brightening
 DEFAULT_FADE_THRESHOLD = 0.2  # mag/day, dimming
 
 # Stochastic-variability veto
@@ -31,6 +31,20 @@ DEFAULT_MAX_REVERSAL_FRAC = 0.4
 DEFAULT_MAX_PERSISTENT_FRAC = 0.5
 DEFAULT_EVENT_WINDOW_DAYS = 7.0
 DEFAULT_MIN_OUTSIDE_POINTS = 4
+
+# Total-baseline cut: an object detected over a span longer than this looks
+# like a long-lived variable (AGN-adjacent) rather than a single fast
+# transient event, regardless of what its steepest pairwise rate says.
+DEFAULT_MAX_BASELINE_DAYS = 200.0
+
+
+def detection_span_days(detected_rows):
+    """Days between an object's first and last detection (any band/survey),
+    or 0.0 if fewer than 2 detections."""
+    if len(detected_rows) < 2:
+        return 0.0
+    jds = [r["jd"] for r in detected_rows]
+    return max(jds) - min(jds)
 
 
 def has_crossmatch(h5file, objid):
@@ -125,13 +139,30 @@ def find_best_rate_pair(
 
 
 def _is_blip(band_rows, a, b, window_days, revert_tol):
+    """True if this pair looks like one side of an isolated single-epoch
+    spike rather than a real, sustained change. Checked in both
+    directions, since a spike shows up as two consecutive pairs in a
+    three-point run (baseline -> spike, then spike -> baseline) and either
+    one could be the pair under test:
+      forward:  the point right after b snaps back near a's level (b was
+                the spike, "rising into" it).
+      backward: the point right before a already sat near b's level (a was
+                the spike, "falling out of" it).
+    """
+    idx_a = band_rows.index(a)
     idx_b = band_rows.index(b)
-    if idx_b + 1 >= len(band_rows):
-        return False
-    c = band_rows[idx_b + 1]
-    if (c["jd"] - b["jd"]) > window_days:
-        return False
-    return abs(c["mag"] - a["mag"]) < revert_tol
+
+    if idx_b + 1 < len(band_rows):
+        c = band_rows[idx_b + 1]
+        if (c["jd"] - b["jd"]) <= window_days and abs(c["mag"] - a["mag"]) < revert_tol:
+            return True
+
+    if idx_a - 1 >= 0:
+        z = band_rows[idx_a - 1]
+        if (a["jd"] - z["jd"]) <= window_days and abs(z["mag"] - b["mag"]) < revert_tol:
+            return True
+
+    return False
 
 
 def _reversal_fraction(band_rows):

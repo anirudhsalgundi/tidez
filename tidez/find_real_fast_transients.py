@@ -56,6 +56,7 @@ from tidez.crossmatch_legacy_survey import (
     fetch_cutout_bytes,
     write_legacy_cutout,
 )
+from tidez.build_h5 import CATALOG_DTYPE
 from tidez.crossmatch_milliquas import (
     DEFAULT_CHUNK_SIZE,
     DEFAULT_MILLIQUAS_CATALOG,
@@ -70,6 +71,7 @@ from tidez.transient_filters import (
     DEFAULT_BLIP_WINDOW_DAYS,
     DEFAULT_EVENT_WINDOW_DAYS,
     DEFAULT_FADE_THRESHOLD,
+    DEFAULT_MAX_BASELINE_DAYS,
     DEFAULT_MAX_DT_DAYS,
     DEFAULT_MAX_PERSISTENT_FRAC,
     DEFAULT_MAX_REVERSAL_FRAC,
@@ -80,6 +82,7 @@ from tidez.transient_filters import (
     DEFAULT_MIN_SNR,
     DEFAULT_RISE_THRESHOLD,
     DEFAULT_SIGMA_THRESH,
+    detection_span_days,
     find_best_rate_pair,
     has_crossmatch,
     is_stochastic,
@@ -92,6 +95,28 @@ PROJECT_ROOT = pathlib.Path(__file__).resolve().parent.parent
 DATA_DIR = PROJECT_ROOT / "data"
 DEFAULT_OUTPUT = DATA_DIR / "fast_real_transients.txt"
 DEFAULT_CROSSMATCH_OUTPUT = DATA_DIR / "fast_real_transients_crossmatched.txt"
+DEFAULT_SUBSET_H5 = DATA_DIR / "fast_real_transients.h5"
+
+
+def write_subset_h5(source_h5file, objids, output_path: pathlib.Path):
+    """Copy just the given objids' full groups (lightcurve, cutouts,
+    crossmatch, milliquas, legacy_survey -- whatever each has) plus a
+    matching /catalog table into a new, much smaller H5 file. Lets the
+    webapp browse just the final candidates without loading/indexing the
+    full ~100k-object master H5."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    logger.info(f"Writing {len(objids)}-object candidate subset to {output_path} ...")
+    with h5py.File(output_path, "w") as out_h5file:
+        catalog = out_h5file.create_dataset(
+            "catalog", shape=(len(objids),), maxshape=(None,), dtype=CATALOG_DTYPE, chunks=True,
+        )
+        for i, objid in enumerate(tqdm(objids, desc="Writing candidate subset H5", unit="obj")):
+            source_h5file.copy(source_h5file[objid], out_h5file, name=objid)
+            ra = float(source_h5file[objid].attrs["ra"])
+            dec = float(source_h5file[objid].attrs["dec"])
+            n_epochs = source_h5file[objid]["lightcurve"].shape[0]
+            catalog[i] = (objid.encode("ascii"), ra, dec, n_epochs)
+    logger.info(f"Done writing {output_path}.")
 
 
 def run(
@@ -118,9 +143,11 @@ def run(
     legacy_size_pix: int = DEFAULT_SIZE_PIX,
     legacy_sleep: float = DEFAULT_SLEEP,
     enable_agn_veto: bool = False,
+    max_baseline_days: float | None = DEFAULT_MAX_BASELINE_DAYS,
+    subset_h5: pathlib.Path | None = DEFAULT_SUBSET_H5,
 ):
     stage_counts = {
-        "total": 0, "rate_cut_passed": 0,
+        "total": 0, "rate_cut_passed": 0, "too_old_rejected": 0,
         "milliquas_rejected": 0, "stochastic_rejected": 0, "final_passed": 0,
     }
 
@@ -137,6 +164,11 @@ def run(
             detected = [r for r in rows if r["detected"]]
             if len(detected) < min_detections:
                 continue
+            if max_baseline_days is not None and detection_span_days(detected) > max_baseline_days:
+                # Detected over too long a span to be a single fast transient
+                # event -- looks like a long-lived variable instead.
+                stage_counts["too_old_rejected"] += 1
+                continue
             best = find_best_rate_pair(
                 detected, rise_threshold, fade_threshold, min_dt_days, max_dt_days,
                 min_delta_mag, sigma_thresh, min_snr, blip_window_days, blip_revert_tol,
@@ -147,7 +179,10 @@ def run(
             rate_survivors.append((objid, score, rate, direction, significance, band_rows, row_a, row_b, rows))
 
         stage_counts["rate_cut_passed"] = len(rate_survivors)
-        logger.info(f"Stage 1/4 (rate cut): {len(rate_survivors)}/{len(objids)} objects passed.")
+        logger.info(
+            f"Stage 1/4 (rate cut): {len(rate_survivors)}/{len(objids)} objects passed "
+            f"({stage_counts['too_old_rejected']} rejected for a >{max_baseline_days}-day detection span)."
+        )
 
         if enable_agn_veto:
             # Stage 2: Milliquas crossmatch, only for survivors lacking it.
@@ -231,6 +266,9 @@ def run(
             if has_crossmatch(h5file, c[0])
         }
 
+        if subset_h5 is not None:
+            write_subset_h5(h5file, [c[0] for c in final_survivors], subset_h5)
+
     return final_survivors, crossmatched_objids, stage_counts, n_legacy_failed
 
 
@@ -247,7 +285,7 @@ def main():
                          help="Output text file of final survivors that also have a "
                               "ZTF/Rubin crossmatch, one per line.")
     parser.add_argument("--rise-threshold", type=float, default=DEFAULT_RISE_THRESHOLD,
-                         help="Minimum brightening rate (mag/day) to qualify (default: 0.5).")
+                         help="Minimum brightening rate (mag/day) to qualify (default: 0.7).")
     parser.add_argument("--fade-threshold", type=float, default=DEFAULT_FADE_THRESHOLD,
                          help="Minimum fading rate (mag/day) to qualify (default: 0.2).")
     parser.add_argument("--min-dt-days", type=float, default=DEFAULT_MIN_DT_DAYS,
@@ -267,6 +305,12 @@ def main():
                          help="Mag tolerance for the anti-blip revert-to-baseline check (default: 0.15).")
     parser.add_argument("--min-detections", type=int, default=DEFAULT_MIN_DETECTIONS,
                          help="Minimum total good detections an object must have (default: 3).")
+    parser.add_argument("--max-baseline-days", type=float, default=DEFAULT_MAX_BASELINE_DAYS,
+                         help="Reject objects detected over a longer span than this (default: "
+                              "200.0) -- looks like a long-lived variable, not a single fast "
+                              "transient event. Use --no-max-baseline to disable entirely.")
+    parser.add_argument("--no-max-baseline", action="store_true",
+                         help="Disable the max-baseline-days cut entirely.")
     parser.add_argument("--max-reversal-frac", type=float, default=DEFAULT_MAX_REVERSAL_FRAC,
                          help="Reject if the fraction of sign-flipping consecutive deltas in the "
                               "event band is >= this (default: 0.4).")
@@ -296,6 +340,13 @@ def main():
     parser.add_argument("--enable-agn-veto", action="store_true",
                          help="Also run the Milliquas crossmatch + AGN veto (stages 2-3). Off by "
                               "default: rate-cut survivors go straight to Legacy Survey crossmatch.")
+    parser.add_argument("--subset-h5", type=pathlib.Path, default=DEFAULT_SUBSET_H5,
+                         help="Also write a smaller H5 file containing just the final survivors' "
+                              "full data (lightcurve, cutouts, crossmatch, milliquas, legacy_survey) "
+                              "-- for faster webapp browsing (default: data/fast_real_transients.h5). "
+                              "Use --no-subset-h5 to skip this.")
+    parser.add_argument("--no-subset-h5", action="store_true",
+                         help="Skip writing the candidate subset H5 file.")
     args = parser.parse_args()
 
     final_survivors, crossmatched_objids, stage_counts, n_legacy_failed = run(
@@ -310,6 +361,7 @@ def main():
         blip_window_days=args.blip_window_days,
         blip_revert_tol=args.blip_revert_tol,
         min_detections=args.min_detections,
+        max_baseline_days=None if args.no_max_baseline else args.max_baseline_days,
         max_reversal_frac=args.max_reversal_frac,
         max_persistent_frac=args.max_persistent_frac,
         event_window_days=args.event_window_days,
@@ -322,6 +374,7 @@ def main():
         legacy_size_pix=args.legacy_size_pix,
         legacy_sleep=args.legacy_sleep,
         enable_agn_veto=args.enable_agn_veto,
+        subset_h5=None if args.no_subset_h5 else args.subset_h5,
     )
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
