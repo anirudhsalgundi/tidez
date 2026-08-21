@@ -37,6 +37,14 @@ DEFAULT_MIN_OUTSIDE_POINTS = 4
 # transient event, regardless of what its steepest pairwise rate says.
 DEFAULT_MAX_BASELINE_DAYS = 200.0
 
+# Upper-limit-implied rate cut (used by kn_search.py). A non-detection only
+# bounds the true mag at that epoch (fainter than limmag for an upper limit
+# before a rise, brighter... no -- for a fade, the object must have dropped
+# below limmag), so the rate implied by pairing it with an adjacent
+# detection is a lower bound on the true rate, not a measurement of it.
+DEFAULT_UL_RISE_THRESHOLD = 0.5  # mag/day, upper limit -> detection
+DEFAULT_UL_FADE_THRESHOLD = 0.2  # mag/day, detection -> upper limit
+
 
 def detection_span_days(detected_rows):
     """Days between an object's first and last detection (any band/survey),
@@ -134,6 +142,76 @@ def find_best_rate_pair(
             score = rate * significance
             if best is None or score > best[0]:
                 best = (score, rate, direction, significance, band_rows, a, b)
+
+    return best
+
+
+def find_best_upper_limit_pair(
+    rows,
+    rise_threshold: float = DEFAULT_UL_RISE_THRESHOLD,
+    fade_threshold: float = DEFAULT_UL_FADE_THRESHOLD,
+    min_dt_days: float = DEFAULT_MIN_DT_DAYS,
+    max_dt_days: float | None = DEFAULT_MAX_DT_DAYS,
+    min_snr: float = DEFAULT_MIN_SNR,
+):
+    """Steepest implied rise/fade rate across all bands from an
+    upper-limit/detection pair, as a complement to find_best_rate_pair's
+    detection/detection pairs -- catches fast events where one endpoint
+    wasn't detected at all instead of being measured.
+
+    `rows` must include BOTH detections and upper limits (i.e. call
+    load_object_rows without filtering to detected-only).
+
+      rise: upper limit at `a` followed by a detection at `b` with
+            (a.limmag - b.mag) / dt >= rise_threshold. Since the object was
+            *not* detected at `a`, its true mag then was >= a.limmag, so
+            this is a lower bound on the true rise rate -- it may be faster.
+      fade: detection at `a` followed by an upper limit at `b` with
+            (b.limmag - a.mag) / dt >= fade_threshold. Same logic in
+            reverse: the object faded below b.limmag by `b`, so this is a
+            lower bound on the true fade rate.
+
+    Returns (score, rate, direction, band_rows, row_a, row_b) for the
+    best-scoring pair, or None if nothing qualifies. score = rate (no
+    magerr-based significance available for an upper limit).
+    """
+    best = None
+    for band, group in itertools.groupby(
+        sorted(rows, key=lambda r: (r["band"], r["jd"])), key=lambda r: r["band"]
+    ):
+        band_rows = sorted(group, key=lambda r: r["jd"])
+        for a, b in zip(band_rows, band_rows[1:]):
+            dt = b["jd"] - a["jd"]
+            if dt < min_dt_days:
+                continue
+            if max_dt_days is not None and dt > max_dt_days:
+                continue
+
+            if not a["detected"] and b["detected"]:
+                direction = "rise"
+                implied_delta = a["limmag"] - b["mag"]
+                threshold = rise_threshold
+                check_row = b
+            elif a["detected"] and not b["detected"]:
+                direction = "fade"
+                implied_delta = b["limmag"] - a["mag"]
+                threshold = fade_threshold
+                check_row = a
+            else:
+                continue
+
+            if implied_delta <= 0:
+                continue
+            if check_row["survey"] == "DECam" and check_row["snr"] is not None and check_row["snr"] < min_snr:
+                continue
+
+            rate = implied_delta / dt
+            if rate < threshold:
+                continue
+
+            score = rate
+            if best is None or score > best[0]:
+                best = (score, rate, direction, band_rows, a, b)
 
     return best
 
