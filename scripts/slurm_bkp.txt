@@ -17,3 +17,74 @@ source /ocean/projects/phy250012p/salgundi/tidez/.venv/bin/activate
 rsync -rzvP /ocean/projects/phy250012p/salgundi/tidez/data/tidez_master.h5 /ocean/projects/phy250012p/salgundi/tidez/data/desirt_master_bd.h5
 time uv run python /ocean/projects/phy250012p/salgundi/tidez/tidez/crossmatch_boom.py --h5 /ocean/projects/phy250012p/salgundi/tidez/data/tidez_master.h5
     # --input-list /ocean/projects/phy250012p/salgundi/tidez/data/max_detections_candidate_fits_files.txt
+
+
+
+#!/bin/bash
+#SBATCH -J tidez_build_h5
+#SBATCH -p RM-shared
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=1
+#SBATCH --mem=2000M
+#SBATCH -A phy250012p
+#SBATCH -t 30:00:00
+#SBATCH -o ../logs/tidez_build_h5_%j.out
+#SBATCH -e ../logs/tidez_build_h5_%j.err
+
+source /ocean/projects/phy250012p/salgundi/tidez/.venv/bin/activate
+
+cp /ocean/projects/phy250012p/salgundi/tidez/data/tidez_master.h5 \
+   /ocean/projects/phy250012p/salgundi/tidez/data/desirt_master_bd.h5
+
+time uv run python /ocean/projects/phy250012p/salgundi/tidez/tidez/crossmatch_boom.py \
+    --h5 /ocean/projects/phy250012p/salgundi/tidez/data/tidez_master.h5
+
+
+#!/bin/bash
+#SBATCH -J find_fast_transients
+#SBATCH -p RM-shared
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=1
+#SBATCH --mem=2000M
+#SBATCH -A phy250012p
+#SBATCH -t 10:00:00
+#SBATCH -o /ocean/projects/phy250012p/salgundi/tidez/logs/find_fast_transients%j.out
+#SBATCH -e /ocean/projects/phy250012p/salgundi/tidez/logs/find_fast_transients%j.err
+
+source /ocean/projects/phy250012p/salgundi/tidez/.venv/bin/activate
+
+time uv run python /ocean/projects/phy250012p/salgundi/tidez/tidez/find_fast_transients.py \
+    --h5 /ocean/projects/phy250012p/salgundi/tidez/data/tidez_master.h5
+
+
+#!/bin/bash
+#SBATCH -J tidez_build_decam_ztf_h5
+#SBATCH -p RM-shared
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=1
+#SBATCH --mem=2000M
+#SBATCH -A phy250012p
+#SBATCH -t 30:00:00
+#SBATCH -o ../logs/tidez_build_decam_ztf_h5_%j.out
+#SBATCH -e ../logs/tidez_build_decam_ztf_h5_%j.err
+
+source /ocean/projects/phy250012p/salgundi/tidez/.venv/bin/activate
+time uv run python /ocean/projects/phy250012p/salgundi/tidez/tidez/build_h5.py \
+    --input-list /ocean/projects/phy250012p/salgundi/tidez/data/decam_ztf_candidates.txt
+
+
+#!/bin/bash
+#SBATCH -J tidez_build_h5
+#SBATCH -p RM-shared
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=1
+#SBATCH --mem=2000M
+#SBATCH -A phy250012p
+#SBATCH -t 30:00:00
+#SBATCH -o ../logs/tidez_build_h5_%j.out
+#SBATCH -e ../logs/tidez_build_h5_%j.err
+
+source /ocean/projects/phy250012p/salgundi/tidez/.venv/bin/activate
+
+time uv run python /ocean/projects/phy250012p/salgundi/tidez/tidez/crossmatch_boom.py \
+    --h5 /ocean/projects/phy250012p/salgundi/tidez/data/tidez_master.h5
