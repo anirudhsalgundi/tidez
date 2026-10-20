@@ -30,8 +30,7 @@ from astropy.io import fits
 from tqdm import tqdm
 
 from tidez.logger import get_logger
-from tidez.get_data import parse_fits_filename
-
+from tidez.create_masterdb import parse_fits_filename
 logger = get_logger("build_h5")
 
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parent.parent
