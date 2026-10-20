@@ -40,7 +40,7 @@ logger = get_logger("webapp")
 
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parent.parent
 DATA_DIR = PROJECT_ROOT / "data"
-TEMPLATES_DIR = PROJECT_ROOT / "templates"
+TEMPLATES_DIR = PROJECT_ROOT / "utils"
 DEFAULT_FAVORITES_FILE = DATA_DIR / "favorite_sources.txt"
 DEFAULT_REPORT_FILE = DATA_DIR / "tns_to_report.txt"
 MASTER_FILE = DATA_DIR / "all_objects.csv"

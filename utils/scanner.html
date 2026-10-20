@@ -21,6 +21,10 @@
         --accent-dim: rgba(79, 184, 232, 0.14);
         --gold: #e0ac3f;
         --gold-dim: rgba(224, 172, 63, 0.16);
+        --red: #ff6b6b;
+        --red-dim: rgba(255, 107, 107, 0.14);
+        --green: #3ddc71;
+        --green-dim: rgba(61, 220, 113, 0.12);
         --radius: 10px;
         --font-display: 'Space Grotesk', -apple-system, BlinkMacSystemFont, sans-serif;
         --font-ui: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
@@ -73,6 +77,7 @@
     }
     button:hover { background: #21242f; border-color: #333748; }
     button.fav.active { background: var(--gold-dim); border-color: var(--gold); color: var(--gold); font-weight: 600; }
+    button.report.active { background: var(--red-dim); border-color: var(--red); color: var(--red); font-weight: 600; }
     .nav-group { display: flex; gap: 6px; }
     #status {
         color: var(--text-dim); font-size: 0.85em; font-family: var(--font-mono);
@@ -97,6 +102,21 @@
     .chip .chip-value.empty { color: var(--text-faint); }
     .chip.copied { border-color: var(--accent); background: var(--accent-dim); }
     .chip.copied .chip-value { color: var(--accent); }
+
+    .tns-group { display: flex; align-items: center; gap: 6px; }
+    a.tns-btn {
+        font-size: 0.82em; padding: 5px 11px; border-radius: 7px; text-decoration: none;
+        background: var(--surface); border: 1px solid var(--border); color: var(--text);
+        font-family: var(--font-mono); transition: border-color 0.12s, background 0.12s;
+    }
+    a.tns-btn:hover { border-color: var(--accent); background: var(--accent-dim); }
+    a.tns-btn.disabled { color: var(--text-faint); pointer-events: none; }
+    .tns-badge {
+        font-size: 0.75em; padding: 4px 9px; border-radius: 999px; border: 1px solid var(--border);
+        color: var(--text-dim); white-space: nowrap;
+    }
+    .tns-badge.on { color: var(--green); border-color: var(--green); background: var(--green-dim); }
+    .tns-badge.off { color: var(--red); border-color: var(--red); background: var(--red-dim); }
 
     main { padding: 22px 24px 32px; max-width: 1180px; margin: 0 auto; }
 
@@ -149,11 +169,17 @@
         <button id="nextBtn">Next ›</button>
     </div>
     <button id="favBtn" class="fav">☆ Favorite</button>
+    <button id="reportBtn" class="report" title="DECam data needs reporting to TNS (data/tns_to_report.txt)">⚑ To report</button>
     <span id="status"></span>
 </header>
 
 <div id="idBar">
     <div class="chip" data-target="decamId"><span class="swatch" style="background:#4fb8e8"></span><span class="chip-label">DECam</span><span class="chip-value" id="decamId">—</span></div>
+    <div class="chip" data-target="programId"><span class="swatch" style="background:#868da0"></span><span class="chip-label">Program</span><span class="chip-value" id="programId">—</span></div>
+    <div class="tns-group">
+        <a id="tnsBtn" class="tns-btn disabled" href="#" target="_blank" rel="noopener">TNS ↗</a>
+        <span id="tnsBadge" class="tns-badge">—</span>
+    </div>
     <div class="chip" data-target="ztfId"><span class="swatch" style="background:#b06bff"></span><span class="chip-label">ZTF</span><span class="chip-value" id="ztfId">—</span></div>
     <div class="chip" data-target="rubinId"><span class="swatch" style="background:#3ddc71"></span><span class="chip-label">Rubin</span><span class="chip-value" id="rubinId">—</span></div>
     <div class="chip" data-target="radecId"><span class="swatch" style="background:#e0ac3f"></span><span class="chip-label">RA, Dec</span><span class="chip-value" id="radecId">—</span></div>
@@ -188,15 +214,24 @@
 </main>
 
 <script>
-// Bright, dark-background-safe variants of the intuitive u/g/r/i/z/y
-// mapping (the matplotlib version's palette used pure black for 'z', which
-// disappears against this UI's dark background).
-const BAND_COLORS = { u: "#b06bff", g: "#3ddc71", r: "#ff5a5f", i: "#ff9f40", z: "#e8e8ea", y: "#c88b6a" };
+// Wavelength-ordered filter colours (violet -> blue -> orange -> reds), shared with
+// plot_lightcurve.py / plot_decam_ztf.py. z and y are very dark, so markers get a
+// light outline (MARKER_OUTLINE) to stay visible on the dark background.
+const BAND_COLORS = {
+    u: "#7A1FD6",  // ~367 nm, violet (UV edge)
+    g: "#00B4FF",  // ~482 nm, blue
+    r: "#FF6A00",  // ~622 nm, orange-red
+    i: "#D4001A",  // ~755 nm, deep red (near IR)
+    z: "#8B0000",  // ~869 nm, dark red (IR)
+    y: "#4A0A0A",  // ~971 nm, very dark maroon (IR)
+};
+const MARKER_OUTLINE = "rgba(232, 234, 240, 0.75)";
 const SURVEY_SYMBOL = { DECam: "diamond", ZTF: "circle", LSST: "triangle-up" };
 
 let objids = [];
 let index = 0;
-let favorites = new Set();
+// list name (as in /api/lists/{name}) -> Set of objids
+const lists = { favorites: new Set(), report: new Set() };
 let currentObjid = null;
 
 // Bumped on every drawCurrent() call; a fetch response is only applied if
@@ -206,6 +241,7 @@ let renderToken = 0;
 
 const statusEl = document.getElementById("status");
 const favBtn = document.getElementById("favBtn");
+const reportBtn = document.getElementById("reportBtn");
 const lcDiv = document.getElementById("lightcurve");
 
 function setChip(id, value) {
@@ -216,9 +252,11 @@ function setChip(id, value) {
 
 function updateIdBar(data) {
     setChip("decamId", data.objid);
+    setChip("programId", data.program);
     setChip("ztfId", data.ztf_id);
     setChip("rubinId", data.lsst_id);
     setChip("radecId", `${data.ra}, ${data.dec}`);
+    updateTns(data);
 
     const viewerUrl = `https://www.legacysurvey.org/viewer?ra=${data.ra}&dec=${data.dec}&layer=ls-dr10&zoom=16&mark=${data.ra},${data.dec}`;
     document.getElementById("legacyViewerLink").href = viewerUrl;
@@ -295,10 +333,40 @@ function attachRelayoutListener() {
     });
 }
 
-async function loadFavorites() {
-    const res = await fetch("/api/favorites");
-    const data = await res.json();
-    favorites = new Set(data.favorites);
+function updateTns(data) {
+    const btn = document.getElementById("tnsBtn");
+    const badge = document.getElementById("tnsBadge");
+    if (data.tns_name) {
+        btn.href = data.tns_url;
+        btn.textContent = `${data.tns_name}${data.tns_type ? " · " + data.tns_type : ""} ↗`;
+        btn.classList.remove("disabled");
+        badge.textContent = data.decam_on_tns ? "DECam on TNS" : "DECam not on TNS";
+        badge.className = "tns-badge " + (data.decam_on_tns ? "on" : "off");
+    } else {
+        btn.href = "#";
+        btn.textContent = "TNS ↗";
+        btn.classList.add("disabled");
+        badge.textContent = "Not on TNS";
+        badge.className = "tns-badge off";
+    }
+}
+
+async function loadLists() {
+    for (const name of Object.keys(lists)) {
+        const res = await fetch(`/api/lists/${name}`);
+        lists[name] = new Set((await res.json()).objids);
+    }
+}
+
+async function toggleList(name) {
+    if (!objids.length) return;
+    const objid = objids[index];
+    const inList = lists[name].has(objid);
+    const res = await fetch(`/api/lists/${name}/${encodeURIComponent(objid)}`,
+                            { method: inList ? "DELETE" : "POST" });
+    if (!res.ok) return;
+    inList ? lists[name].delete(objid) : lists[name].add(objid);
+    updateListButtons(objid);
 }
 
 async function loadObjects(objidsFile) {
@@ -319,10 +387,13 @@ async function loadObjects(objidsFile) {
     await drawCurrent();
 }
 
-function updateFavButton(objid) {
-    const isFav = favorites.has(objid);
+function updateListButtons(objid) {
+    const isFav = lists.favorites.has(objid);
     favBtn.textContent = isFav ? "★ Favorited" : "☆ Favorite";
     favBtn.classList.toggle("active", isFav);
+    const toReport = lists.report.has(objid);
+    reportBtn.textContent = toReport ? "⚑ To report ✓" : "⚑ To report";
+    reportBtn.classList.toggle("active", toReport);
 }
 
 function resetCutouts() {
@@ -382,14 +453,15 @@ function buildTraces(rows) {
                 x: xs, y: ys, customdata, text,
                 error_y: { type: "data", array: group.rows.map(r => r.magerr), visible: true, color },
                 mode: "markers", type: "scatter", name: label,
-                marker: { color, symbol, size: 9, line: { width: 1, color: "#0b0d12" } },
+                marker: { color, symbol, size: 9, line: { width: 1, color: MARKER_OUTLINE } },
                 hovertemplate: `${label}<br>mag: %{y:.3f}<br>%{text}<extra></extra>`,
             });
         } else {
             traces.push({
                 x: xs, y: ys, customdata, text,
                 mode: "markers", type: "scatter", name: label,
-                marker: { color, symbol: "triangle-down", size: 8, opacity: 0.4 },
+                marker: { color, symbol: "triangle-down", size: 8, opacity: 0.55,
+                          line: { width: 1, color: MARKER_OUTLINE } },
                 hovertemplate: `${label}<br>lim. mag (5σ): %{y:.3f}<br>%{text}<extra></extra>`,
             });
         }
@@ -402,7 +474,7 @@ async function drawCurrent() {
 
     resetCutouts();
     const objid = objids[index];
-    updateFavButton(objid);
+    updateListButtons(objid);
     statusEl.textContent = `[${index + 1}/${objids.length}]  ${objid}`;
 
     const res = await fetch(`/api/objects/${encodeURIComponent(objid)}/lightcurve`);
@@ -490,7 +562,14 @@ function attachClickListener() {
 
 async function loadCutouts(objid, epochIdx) {
     const res = await fetch(`/api/objects/${encodeURIComponent(objid)}/cutout/${epochIdx}`);
-    if (!res.ok) return;
+    if (!res.ok) {
+        // scan bundles keep cutouts for detections only; don't leave the previous epoch's images up
+        for (const key of ["template", "science", "diff"]) {
+            document.getElementById(`${key}-frame`).innerHTML =
+                '<span class="placeholder">No cutout stored for this epoch</span>';
+        }
+        return;
+    }
     const data = await res.json();
     for (const [key, b64] of [["template", data.template], ["science", data.science], ["diff", data.diff]]) {
         const frame = document.getElementById(`${key}-frame`);
@@ -511,13 +590,8 @@ document.getElementById("nextBtn").onclick = () => {
     index = (index + 1) % objids.length;
     drawCurrent();
 };
-document.getElementById("favBtn").onclick = async () => {
-    if (!objids.length) return;
-    const objid = objids[index];
-    await fetch(`/api/favorites/${encodeURIComponent(objid)}`, { method: "POST" });
-    favorites.add(objid);
-    updateFavButton(objid);
-};
+favBtn.onclick = () => toggleList("favorites");
+reportBtn.onclick = () => toggleList("report");
 document.getElementById("applyFilter").onclick = async () => {
     const val = document.getElementById("objidsFile").value.trim();
     if (!val) {
@@ -539,7 +613,7 @@ document.getElementById("applyFilter").onclick = async () => {
 };
 
 (async function init() {
-    await loadFavorites();
+    await loadLists();
     await loadObjects(null);
 })();
 </script>
