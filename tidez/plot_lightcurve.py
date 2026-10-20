@@ -49,26 +49,32 @@ SURVEY_STYLE = {
 }
 
 
+MIN_LIMMAG5, MAX_LIMMAG5 = 19.0, 26.0  # as in build_lcs.py: outside this, failed subtractions
+
+
 def _decam_rows(h5file, objid, good_only=True):
-    """Every DECam epoch is kept either way -- good_only only changes which
-    STATUS_FPHOT values count as a detection vs. an upper limit (plotted at
-    LIM_MAG5, populated for every epoch regardless of status):
-      good_only=True  (default): only 'p' (SNR>~5.8, good subtraction) counts
-                       as detected; 'q' (marginal) and 'm' (non-detection)
-                       both become upper limits.
-      good_only=False: 'p' and 'q' both count as detected; only 'm' becomes
-                       an upper limit.
+    """Every usable DECam epoch, as a detection or an upper limit at LIM_MAG5.
+    Epochs with LIM_MAG5 outside 19-26 (or NaN) are failed subtractions and skipped.
+      good_only=True  (default): detected = the DETECTED column written by
+                       scanning_setup.py (status 'p', SNR > 5, CNN > 0.7, mag <= LIM_MAG5),
+                       i.e. exactly what the fast-transient filter used; files without
+                       it fall back to status 'p'.
+      good_only=False: also count status 'q' epochs with mag <= LIM_MAG5.
     """
     rows = []
     lc = h5file[objid]["lightcurve"][:]
+    has_detected = "DETECTED" in (lc.dtype.names or ())
     for epoch_idx, row in enumerate(lc):
         band = row["FILTER"].decode("ascii").strip()
         if not band or band == "N/A":
             continue
+        if not MIN_LIMMAG5 <= row["LIM_MAG5"] <= MAX_LIMMAG5:
+            continue
         status = row["STATUS_FPHOT"].decode("ascii").strip()
         jd = float(row["MJD_OBS"]) + MJD_TO_JD_OFFSET
-        detected_statuses = {"p"} if good_only else {"p", "q"}
-        detected = status in detected_statuses
+        detected = bool(row["DETECTED"]) if has_detected else status == "p"
+        if not good_only and status == "q" and row["MAG_FPHOT"] <= row["LIM_MAG5"]:
+            detected = True
         rows.append({
             "jd": jd,
             "mag": float(row["MAG_FPHOT"]),

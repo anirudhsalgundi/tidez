@@ -113,6 +113,35 @@ def _text_attr(group, key: str) -> str | None:
     return str(value).strip()
 
 
+def _num_attr(group, key: str) -> float | None:
+    value = group.attrs.get(key)
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return None
+    return None if math.isnan(value) else value
+
+
+def _filter_spans(group) -> list:
+    """The stretches of light curve that gave the filter's rise and fade rates, as
+    {side, rate, band, pair, start_jd, end_jd}. Bundles written before *_start_mjd /
+    *_end_mjd existed fall back to [mjd - dt, mjd] (exact for the pairs method)."""
+    spans = []
+    for side in ("rise", "fade"):
+        rate = _num_attr(group, f"{side}_rate")
+        start, end = _num_attr(group, f"{side}_start_mjd"), _num_attr(group, f"{side}_end_mjd")
+        if start is None or end is None:
+            mjd, dt = _num_attr(group, f"{side}_mjd"), _num_attr(group, f"{side}_dt")
+            if mjd is not None and dt is not None:
+                start, end = mjd - dt, mjd
+        if rate is None or start is None:
+            continue
+        spans.append({"side": side, "rate": rate, "band": _text_attr(group, f"{side}_band"),
+                      "pair": _text_attr(group, f"{side}_pair"),
+                      "start_jd": start + 2400000.5, "end_jd": end + 2400000.5})
+    return spans
+
+
 def _tns_info(group) -> dict:
     """TNS match stored by scanning_setup.py. tns_url uses the bare name
     ("AT 2025abc" -> https://www.wis-tns.org/object/2025abc)."""
@@ -157,6 +186,7 @@ def api_lightcurve(objid: str):
         dec = float(h5file[objid].attrs["dec"])
         program = _object_program(h5file[objid], objid)
         tns = _tns_info(h5file[objid])
+        filter_spans = _filter_spans(h5file[objid])
         cm = h5file[objid].get("crossmatch")
         ztf_id = str(cm["ztf"].attrs["objectId"]) if cm is not None and "ztf" in cm else None
         lsst_id = str(cm["lsst"].attrs["objectId"]) if cm is not None and "lsst" in cm else None
@@ -169,6 +199,7 @@ def api_lightcurve(objid: str):
         "dec": dec,
         "program": program,
         **tns,
+        "filter_spans": filter_spans,
         "ztf_id": ztf_id,
         "lsst_id": lsst_id,
         "title_suffix": title_suffix,

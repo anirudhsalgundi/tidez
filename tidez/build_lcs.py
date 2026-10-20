@@ -3,7 +3,7 @@ Step 2: build the light-curve Parquet files for every object in the master file.
 
 For each FITS file in data/all_objects.csv (from create_masterdb.py), read only the
 light-curve columns of the HDU 1 table (memory-mapped, so the 121x121 thumbnails
-are never read off disk). Every epoch with a real filter and a finite LIM_MAG5 is
+are never read off disk). Every epoch with a real filter and MIN_LIMMAG5 <= LIM_MAG5 <= MAX_LIMMAG5 (19-26) is
 kept, and is either a detection or an upper limit. One pass writes two versions
 that differ only in the detection rule:
 
@@ -17,7 +17,9 @@ Even a bad ('q') subtraction still records that the field was observed then, at 
 the status column says which upper limits came from which status.
 
 Dropped: epochs with a blank/'N/A' filter or no LIM_MAG5 (in those the photometry failed
-outright -- ZP, SNR, mag and even MJD_OBS are NaN).
+outright -- ZP, SNR, mag and even MJD_OBS are NaN), and epochs with LIM_MAG5 outside 19-26.
+Those are failed subtractions/calibrations (a 5-sigma depth of mag 0-17 where DECam reaches
+20-24): their "detections" sit at mag ~5 and would fake huge rise/fade rates.
 
 Columns: objid, mjd, filter, mag, magerr, limmag5, detected, status, science_name
 
@@ -49,6 +51,8 @@ MASTER_FILE = DATA_DIR / "all_objects.csv"
 MIN_SNR = 5.0
 MIN_CNN = 0.7
 GOOD_STATUS = "p"
+MIN_LIMMAG5 = 19.0  # shallower epochs are failed subtractions, not real photometry
+MAX_LIMMAG5 = 26.0  # deeper than DECam can reach in one epoch -> broken calibration
 
 # version name -> (output filename, whether a detection must have STATUS_FPHOT == 'p')
 VERSIONS = {
@@ -95,7 +99,7 @@ def read_lightcurve(task: tuple):
     except Exception as e:
         return objid, f"{type(e).__name__}: {e}"
 
-    keep = (band != "") & (band != "N/A") & np.isfinite(limmag5)
+    keep = (band != "") & (band != "N/A") & (limmag5 >= MIN_LIMMAG5) & (limmag5 <= MAX_LIMMAG5)  # NaN fails too
     order = np.flatnonzero(keep)[np.argsort(mjd[keep], kind="stable")]
 
     # NaN comparisons are False, so NaN SNR/CNN/mag never count as a detection.

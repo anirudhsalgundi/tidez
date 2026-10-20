@@ -151,15 +151,18 @@ def pair_rates(pairs: pd.DataFrame, min_delta_mag: float = MIN_DELTA_MAG,
 
 def _best_per_object(candidates: pd.DataFrame) -> pd.DataFrame:
     """candidates: one row per possible rate with objid, side ('rise'/'fade'), rate, band,
-    pair_type, dt, mjd. Returns per objid and side the fastest rate (+ band, pair type, dt,
-    mjd) and the fastest *measured* ('det-det') rate."""
+    pair_type, dt, mjd, start_mjd, end_mjd. Returns per objid and side the fastest rate
+    (+ band, pair type, dt, mjd, and the start/end of the stretch of light curve it was
+    measured over) and the fastest *measured* ('det-det') rate."""
     out = []
     for side in ("rise", "fade"):
         c = candidates[(candidates["side"] == side) & candidates["rate"].notna()]
-        best = c.loc[c.groupby("objid")["rate"].idxmax(), ["objid", "rate", "band", "pair_type", "dt", "mjd"]]
+        best = c.loc[c.groupby("objid")["rate"].idxmax(),
+                     ["objid", "rate", "band", "pair_type", "dt", "mjd", "start_mjd", "end_mjd"]]
         out.append(best.set_index("objid").rename(columns={
             "rate": f"{side}_rate", "band": f"{side}_band", "pair_type": f"{side}_pair",
-            "dt": f"{side}_dt", "mjd": f"{side}_mjd"}))
+            "dt": f"{side}_dt", "mjd": f"{side}_mjd",
+            "start_mjd": f"{side}_start_mjd", "end_mjd": f"{side}_end_mjd"}))
         measured = c[c["pair_type"] == "det-det"].groupby("objid")["rate"].max()
         out.append(measured.rename(f"{side}_rate_measured"))
     return pd.concat(out, axis=1)
@@ -173,8 +176,9 @@ def rates(lc: pd.DataFrame, min_dt_days: float = MIN_DT_DAYS, min_delta_mag: flo
     pairs = pair_rates(band_pairs(lc, min_dt_days), min_delta_mag, sigma_thresh)
     pairs = pairs.assign(band=pairs["survey"] + "-" + pairs["filter"])
     candidates = pd.concat([
-        pairs.assign(side=side, rate=pairs[f"{side}_rate"], mjd=pairs["mjd_b"])
-        [["objid", "side", "rate", "band", "pair_type", "dt", "mjd"]]
+        pairs.assign(side=side, rate=pairs[f"{side}_rate"], mjd=pairs["mjd_b"],
+                     start_mjd=pairs["mjd_a"], end_mjd=pairs["mjd_b"])
+        [["objid", "side", "rate", "band", "pair_type", "dt", "mjd", "start_mjd", "end_mjd"]]
         for side in ("rise", "fade")])
     return _best_per_object(candidates)
 
@@ -251,10 +255,11 @@ def peak_rates(lc: pd.DataFrame, min_dt_days: float = MIN_DT_DAYS, min_delta_mag
                 pair = "ul-det" if side == "rise" else "det-ul"
             far_det = max((j for j in run if d[j]), key=lambda j: abs(t[j] - t[k]))
             measured = (m[far_det] - m[k]) / abs(t[far_det] - t[k]) if far_det != k else np.nan
-            rows.append((objid[a], side, delta / dt, band[a], pair, dt, t[end], measured, len(run)))
+            rows.append((objid[a], side, delta / dt, band[a], pair, dt, t[end],
+                         min(t[end], t[k]), max(t[end], t[k]), measured, len(run)))
 
     cand = pd.DataFrame(rows, columns=["objid", "side", "rate", "band", "pair_type", "dt", "mjd",
-                                       "measured", "run_points"])
+                                       "start_mjd", "end_mjd", "measured", "run_points"])
     best = _best_per_object(cand)
     # measured rate and run length of the run that gave each object's best rate
     for side in ("rise", "fade"):

@@ -8,7 +8,7 @@ offline:
   /<objid>/                        attrs: objid, ra, dec, program, decam_on_tns, the TNS
                                    match (tns_name, tns_type, ...) and the filter's numbers
                                    (rise_rate, rise_band, fade_rate, age_days, ...)
-  /<objid>/lightcurve              every DECam epoch: MJD_OBS, FILTER, MAG_FPHOT, MAGERR_FPHOT,
+  /<objid>/lightcurve              every usable DECam epoch (19 <= LIM_MAG5 <= 26, as in build_lcs.py): MJD_OBS, FILTER, MAG_FPHOT, MAGERR_FPHOT,
                                    SNR_FPHOT, STATUS_FPHOT, LIM_MAG3, LIM_MAG5, CNNSCORE, and
                                    DETECTED (the same detection rule as build_lcs.py)
   /<objid>/cutouts/{template,science,diff}
@@ -28,7 +28,8 @@ internal names, i.e. the DECam data has been reported.
 
 Resumable: objects already in the bundle are skipped, so a re-run after a crash or a
 failed Legacy Survey fetch only does what's missing (objects whose cutout fetch failed
-are written without one; --retry-legacy fetches those).
+are written without one; --retry-legacy fetches those). After re-running any of steps
+2-5, use --fresh so the bundle is rebuilt from the new candidate list.
 
 Usage:
     python tidez/scanning_setup.py
@@ -49,7 +50,7 @@ from tqdm import tqdm
 from tidez.build_h5 import STAMP_SIDE, append_to_catalog, ensure_catalog_dataset
 from tidez.crossmatch_legacy_survey import (DEFAULT_LAYER, DEFAULT_PIXSCALE, DEFAULT_SIZE_PIX, DEFAULT_SLEEP,
                                             fetch_cutout_bytes, write_legacy_cutout)
-from tidez.build_lcs import GOOD_STATUS, MIN_CNN, MIN_SNR
+from tidez.build_lcs import GOOD_STATUS, MAX_LIMMAG5, MIN_CNN, MIN_LIMMAG5, MIN_SNR
 from tidez.logger import get_logger
 logger = get_logger("scanning_setup")
 
@@ -89,6 +90,9 @@ def read_decam(file_path: str) -> tuple:
     candidate FITS file. Only the stamps of detection epochs are read off disk (memmap)."""
     with fits.open(file_path, memmap=True) as hdul:
         t = hdul[1].data
+        # same epoch cut as build_lcs.py: drop failed subtractions (and NaN depths)
+        limmag5 = np.asarray(t["LIM_MAG5"], dtype="f4")
+        t = t[(limmag5 >= MIN_LIMMAG5) & (limmag5 <= MAX_LIMMAG5)]
         lc = np.empty(len(t), dtype=LIGHTCURVE_DTYPE)
         for col in ("MJD_OBS", "MAG_FPHOT", "MAGERR_FPHOT", "SNR_FPHOT", "LIM_MAG3", "LIM_MAG5"):
             lc[col] = t[col]
@@ -190,7 +194,13 @@ def main() -> None:
     parser.add_argument("--no-legacy", action="store_true", help="Skip the Legacy Survey cutouts.")
     parser.add_argument("--retry-legacy", action="store_true",
                         help="Also fetch Legacy Survey cutouts for objects already in the bundle without one.")
+    parser.add_argument("--fresh", action="store_true",
+                        help="Delete --out first and rebuild it. Use after re-running steps 2-5: otherwise "
+                             "objects already in the bundle keep their old light curves and filter numbers.")
     args = parser.parse_args()
+    if args.fresh and args.out.exists():
+        logger.info(f"--fresh: removing {args.out}")
+        args.out.unlink()
 
     cand = pd.read_csv(args.candidates, index_col=0)
     text_cols = {c: cand[c].dtype == object or c in TEXT_COLUMNS for c in cand.columns}

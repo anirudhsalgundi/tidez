@@ -1,15 +1,16 @@
 """
 Find fast transients on the combined DECam + ZTF + LSST light curves.
 
-1. Basic cuts (tidez.basic_filtering): not a rock (>= 2 detections, or a galaxy nearby),
-   not a star, not an AGN/quasar.
+0. Objects: all of them, or only those whose objid starts with --prefix (e.g. --prefix T).
+1. >= --min-detections detections (default 2, any survey): a single detection never passes.
+   Then the basic cuts (tidez.basic_filtering): not a star, not an AGN/quasar.
 2. Age: first -> last detection across all surveys < --max-age-days (default 50).
 3. Not stochastic: reversal_frac < --max-reversal-frac (0.4), i.e. the light curve doesn't
    keep changing direction (AGN-like flickering; only significant steps count) -- see
    multisurvey_photstats.variability_stats.
 4. Rates (tidez.multisurvey_photstats), computed independently in each band (survey + filter)
-   on the individual epochs (UT): rise >= --rise-threshold (default 1 mag/day) AND
-   fade >= --fade-threshold (default 0.25 mag/day; --require either to accept just one). A rate counts
+   on the individual epochs (UT): rise >= --rise-threshold (default 0.7 mag/day) AND
+   fade >= --fade-threshold (default 0.15 mag/day; --require either to accept just one). A rate counts
    whether it is measured between two detections or is a lower bound from an upper
    limit next to a detection (non-detection -> detection for rises, detection ->
    non-detection for fades). --method picks how rates are measured:
@@ -25,15 +26,21 @@ Find fast transients on the combined DECam + ZTF + LSST light curves.
 The log prints the funnel: objects left after each cut, and how many each cut removes
 on its own.
 
+Benchmark: T202502161025195m274154 (--benchmark) is a known fast transient that every
+version of the filter must keep. The log ends with BENCHMARK PASSED, or BENCHMARK TEST
+FAILED plus which cuts it failed and its numbers -- then the filter needs changing.
+
 Outputs:
   data/fast_transients.csv          one row per candidate, fastest first (by the slower of
                                     rise and fade): flags, age, rates (which band, measured
-                                    or bound, dt, run length), variability, peak, TNS match
+                                    or bound, dt, the start/end mjd of the stretch that gave
+                                    them, run length), variability, peak, TNS match
   data/fast_transients.txt          candidate objids, one per line (for the scanner)
   data/fast_transients_stats.parquet  the same columns for *every* object (for tuning cuts)
 
 Usage:
     python tidez/find_fast_transients.py
+    python tidez/find_fast_transients.py --prefix T
     python tidez/find_fast_transients.py --rise-threshold 1.0 --require either
     python tidez/find_fast_transients.py --method peak --filters i z y
     python tidez/find_fast_transients.py --min-delta-mag 0.3 --sigma-thresh 3
@@ -57,8 +64,10 @@ BOOM_FILE = DATA_DIR / "boom_lc.parquet"
 OUT_PREFIX = DATA_DIR / "fast_transients"
 
 MAX_AGE_DAYS = 50.0
-RISE_THRESHOLD = 1.0  # mag/day
-FADE_THRESHOLD = 0.25  # mag/day
+RISE_THRESHOLD = 0.7  # mag/day
+FADE_THRESHOLD = 0.15  # mag/day
+MIN_DETECTIONS = 2
+BENCHMARK = "T202502161025195m274154"  # known fast transient: must always pass
 MIN_DT_DAYS = 1.0   # days
 MIN_DELTA_MAG = 0.5
 SIGMA_THRESH = 4.0
@@ -66,8 +75,10 @@ MAX_REVERSAL_FRAC = 0.4
 
 OUTPUT_COLUMNS = [
     "age_days", "decam_age_days", "n_det", "first_det_mjd", "last_det_mjd",
-    "rise_rate", "rise_band", "rise_pair", "rise_dt", "rise_mjd", "rise_rate_measured", "rise_run_points",
-    "fade_rate", "fade_band", "fade_pair", "fade_dt", "fade_mjd", "fade_rate_measured", "fade_run_points",
+    "rise_rate", "rise_band", "rise_pair", "rise_dt", "rise_mjd", "rise_start_mjd", "rise_end_mjd",
+    "rise_rate_measured", "rise_run_points",
+    "fade_rate", "fade_band", "fade_pair", "fade_dt", "fade_mjd", "fade_start_mjd", "fade_end_mjd",
+    "fade_rate_measured", "fade_run_points",
     "peak_mag", "peak_band", "peak_mjd", "bands_detected", "surveys_detected",
     "reversal_frac",
     "is_rock", "is_star", "is_agn", "is_stochastic", "is_variable", "is_on_tns",
@@ -93,13 +104,14 @@ def find_fast_transients(lc: pd.DataFrame, max_age_days: float, rise_threshold: 
                          fade_threshold: float, require: str, method: str = "pairs",
                          filters: list | None = None, min_run_points: int = photostats.MIN_RUN_POINTS,
                          max_reversal_frac: float = MAX_REVERSAL_FRAC, min_dt_days: float = MIN_DT_DAYS,
-                         min_delta_mag: float = MIN_DELTA_MAG, sigma_thresh: float = SIGMA_THRESH) -> tuple:
+                         min_delta_mag: float = MIN_DELTA_MAG, sigma_thresh: float = SIGMA_THRESH,
+                         min_detections: int = MIN_DETECTIONS, prefixes: list | None = None,
+                         benchmark: str | None = BENCHMARK) -> tuple:
     """Returns (stats for every object, boolean Series of candidates)."""
-    # objids = pd.Index(lc["objid"].unique(), name="objid")
-    objids = pd.Index(
-    lc.loc[lc["objid"].str.startswith("T"), "objid"].unique(),
-    name="objid"
-)
+    objids = pd.Index(lc["objid"].unique(), name="objid")
+    if prefixes:
+        objids = objids[objids.str.startswith(tuple(prefixes))]
+        logger.info(f"Keeping objids starting with {', '.join(prefixes)}: {len(objids)} objects")
     flags = basic_flags(objids, lc)
     logger.info("Basic flags:\n" + flag_summary(flags).to_string())
 
@@ -118,7 +130,7 @@ def find_fast_transients(lc: pd.DataFrame, max_age_days: float, rise_threshold: 
     stats["score"] = stats[["rise_rate", "fade_rate"]].min(axis=1)
 
     steps = [
-        ("not rock", ~stats["is_rock"]),
+        (f">= {min_detections} detections", stats["n_det"].fillna(0) >= min_detections),
         ("not star", ~stats["is_star"]),
         ("not AGN/quasar", ~stats["is_agn"]),
         (f"age < {max_age_days:g} d", stats["age_days"] < max_age_days),
@@ -140,7 +152,38 @@ def find_fast_transients(lc: pd.DataFrame, max_age_days: float, rise_threshold: 
     lines.append(f"  => {int(passed.sum())} of {len(passed)} objects pass "
                  f"({100 * passed.mean():.3f}%)")
     logger.info("\n".join(lines))
+    if benchmark:
+        report_benchmark(benchmark, stats, steps)
     return stats, passed
+
+
+def report_benchmark(objid: str, stats: pd.DataFrame, steps: list) -> None:
+    """Log which cuts the benchmark transient passes or fails, with its numbers."""
+    if objid not in stats.index:
+        logger.error(f"BENCHMARK TEST FAILED: {objid} is not among the objects searched "
+                     f"(not in the light curves, or excluded by --prefix). Changes needed in the filter.")
+        return
+    failed = [name for name, cut in steps if not bool(cut.fillna(False).get(objid, False))]
+    row = stats.loc[objid]
+    fmt = lambda v: f"{v:.3g}" if isinstance(v, float) else str(v)
+    numbers = ", ".join(f"{c}={fmt(row[c])}" for c in ("n_det", "age_days", "reversal_frac", "rise_rate", "rise_band",
+                                                  "rise_pair", "fade_rate", "fade_band", "fade_pair",
+                                                  "is_star", "is_agn") if c in row.index)
+    if failed:
+        logger.error(f"BENCHMARK TEST FAILED: {objid} fails {'; '.join(failed)}. Changes needed in the filter.\n"
+                     f"  {numbers}")
+    else:
+        logger.info(f"Benchmark {objid} passes every cut ({numbers})")
+
+
+def check_benchmark_file(objid: str, txt: pathlib.Path) -> bool:
+    """Cross-check the written candidate list: is the benchmark in it?"""
+    names = {line.strip() for line in txt.read_text().splitlines()}
+    if objid in names:
+        logger.info(f"BENCHMARK PASSED: {objid} is in {txt}")
+        return True
+    logger.error(f"BENCHMARK TEST FAILED: {objid} is not in {txt}. Changes needed in the filter.")
+    return False
 
 
 def main() -> None:
@@ -168,13 +211,20 @@ def main() -> None:
     parser.add_argument("--max-reversal-frac", type=float, default=MAX_REVERSAL_FRAC)
     parser.add_argument("--filters", nargs="+", default=None,
                         help="Only use these filters for the rates (e.g. i z y). Default: all.")
+    parser.add_argument("--prefix", nargs="+", default=None,
+                        help="Only search objids starting with these prefixes (e.g. --prefix T). Default: all.")
+    parser.add_argument("--min-detections", type=int, default=MIN_DETECTIONS,
+                        help="Minimum number of detections, any survey (default 2: one detection never passes).")
+    parser.add_argument("--benchmark", default=BENCHMARK,
+                        help=f"Known fast transient that must pass (default {BENCHMARK}); '' to skip the check.")
     args = parser.parse_args()
 
     lc = load_lightcurves(args.lc, None if args.no_boom else args.boom)
     stats, passed = find_fast_transients(lc, args.max_age_days, args.rise_threshold,
                                          args.fade_threshold, args.require, args.method, args.filters,
                                          args.min_run_points, args.max_reversal_frac,
-                                         args.min_dt_days, args.min_delta_mag, args.sigma_thresh)
+                                         args.min_dt_days, args.min_delta_mag, args.sigma_thresh,
+                                         args.min_detections, args.prefix, args.benchmark)
 
     out = args.out_prefix
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -184,6 +234,8 @@ def main() -> None:
     out.with_suffix(".txt").write_text("".join(f"{o}\n" for o in candidates.index))
     logger.info(f"{len(candidates)} fast-transient candidates -> {out.with_suffix('.csv')} and .txt; "
                 f"stats for all {len(stats)} objects -> {out.name}_stats.parquet")
+    if args.benchmark:
+        check_benchmark_file(args.benchmark, out.with_suffix(".txt"))
 
 
 if __name__ == "__main__":

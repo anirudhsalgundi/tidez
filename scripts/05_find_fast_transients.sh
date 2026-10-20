@@ -15,7 +15,8 @@
 # (data/lightcurves.parquet + data/boom_lc.parquet), with the basic vetoes from
 # data/crossmatches/ and data/tns_public_objects.csv. The funnel (objects left after each
 # cut, and removed by each cut alone) is printed to the .err log. Writes
-# data/fast_transients.csv/.txt and data/fast_transients_stats.parquet.
+# data/fast_transients.csv/.txt and data/fast_transients_stats.parquet. The log ends with
+# BENCHMARK PASSED / BENCHMARK TEST FAILED for T202502161025195m274154.
 # Single-threaded; the 32 CPUs are only there because RM-shared hands out memory
 # per core (~2 GB each). Extra options are passed through, e.g.
 #   sbatch 05_find_fast_transients.sh --rise-threshold 1.0 --require either

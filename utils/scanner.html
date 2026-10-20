@@ -214,18 +214,17 @@
 </main>
 
 <script>
-// Wavelength-ordered filter colours (violet -> blue -> orange -> reds), shared with
-// plot_lightcurve.py / plot_decam_ztf.py. z and y are very dark, so markers get a
-// light outline (MARKER_OUTLINE) to stay visible on the dark background.
+// Filter colours, the same scheme as plot_lightcurve.py (u violet, g green, r red,
+// i orange) but with z white instead of black and a light y, for the dark background.
 const BAND_COLORS = {
-    u: "#7A1FD6",  // ~367 nm, violet (UV edge)
-    g: "#00B4FF",  // ~482 nm, blue
-    r: "#FF6A00",  // ~622 nm, orange-red
-    i: "#D4001A",  // ~755 nm, deep red (near IR)
-    z: "#8B0000",  // ~869 nm, dark red (IR)
-    y: "#4A0A0A",  // ~971 nm, very dark maroon (IR)
+    u: "#B266FF",  // violet
+    g: "#2ECC40",  // green
+    r: "#FF4136",  // red
+    i: "#FF9F1C",  // orange
+    z: "#F2F2F2",  // white
+    y: "#39CCCC",  // teal
 };
-const MARKER_OUTLINE = "rgba(232, 234, 240, 0.75)";
+const MARKER_OUTLINE = "rgba(11, 13, 18, 0.85)";  // dark rim, so the white z markers keep an edge
 const SURVEY_SYMBOL = { DECam: "diamond", ZTF: "circle", LSST: "triangle-up" };
 
 let objids = [];
@@ -422,9 +421,31 @@ async function loadLegacyCutout(objid) {
     legacyMeta.textContent = `${data.layer}, ${data.pixscale}"/px`;
 }
 
-function buildTraces(rows) {
+function firstJd(rows) {
     const detectedJds = rows.filter(r => r.detected).map(r => r.jd);
-    const jdFirst = detectedJds.length ? Math.min(...detectedJds) : Math.min(...rows.map(r => r.jd));
+    return detectedJds.length ? Math.min(...detectedJds) : Math.min(...rows.map(r => r.jd));
+}
+
+// Shaded bands over the stretches of light curve whose rise / fade rate passed the filter.
+function filterSpanShapes(spans, jdFirst) {
+    const shapes = [], annotations = [];
+    for (const s of spans || []) {
+        const band = (s.band || "").split("-").pop();
+        const color = BAND_COLORS[band] || "#868da0";
+        const x0 = s.start_jd - jdFirst, x1 = s.end_jd - jdFirst;
+        shapes.push({ type: "rect", xref: "x", yref: "paper", x0, x1, y0: 0, y1: 1,
+                      fillcolor: color, opacity: 0.13, line: { width: 1, color, dash: "dot" }, layer: "below" });
+        const bound = s.pair && s.pair !== "det-det" ? "≥ " : "";
+        annotations.push({ x: (x0 + x1) / 2, y: s.side === "rise" ? 1.0 : 0.94, xref: "x", yref: "paper",
+                           text: `${s.side} ${bound}${s.rate.toFixed(2)} mag/d · ${s.band} · ${s.pair}`,
+                           showarrow: false, font: { size: 10, color }, bgcolor: "rgba(18,20,27,0.8)",
+                           yanchor: "top" });
+    }
+    return { shapes, annotations };
+}
+
+function buildTraces(rows) {
+    const jdFirst = firstJd(rows);
 
     const byLabel = {};
     for (const r of rows) {
@@ -533,6 +554,7 @@ async function drawCurrent() {
         paper_bgcolor: "#12141b", plot_bgcolor: "#12141b", font: { color: "#e8eaf0", family: "-apple-system, sans-serif" },
         legend: { font: { size: 9.5, color: "#868da0" }, bgcolor: "rgba(0,0,0,0)", itemwidth: 30 },
         margin: { t: 44, r: 150, l: 56, b: 46 },
+        ...filterSpanShapes(data.filter_spans, firstJd(data.rows)),
     };
     Plotly.react(lcDiv, traces, layout, { responsive: true, displaylogo: false });
     attachClickListener();

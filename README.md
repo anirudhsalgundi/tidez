@@ -31,20 +31,22 @@ Steps 3, 4a and 6 are resumable: re-submitting the job continues where it stoppe
 
 - DECam (step 2): SNR > 5, CNN score > 0.7, mag ≤ LIM_MAG5, and (in
   `lightcurves.parquet`) STATUS_FPHOT == `p`. Every other epoch is an upper limit at
-  LIM_MAG5; epochs without a filter or LIM_MAG5 are dropped.
+  LIM_MAG5. Epochs without a filter, or with LIM_MAG5 outside 19–26, are dropped: those
+  are failed subtractions (5σ depths of mag 0–17 and "detections" at mag ~5).
 - ZTF/LSST (step 3): alerts are detections, non-detections are upper limits, forced
   photometry counts as a detection at SNR ≥ 5 with positive flux.
 
 ### Fast-transient filter (step 5)
 
-The log prints a funnel of how many objects survive each cut:
+All objects are searched (`--prefix T` keeps only objids starting with T). The log
+prints a funnel of how many objects survive each cut:
 
-1. not a rock — at least 2 detections, unless an extended Legacy Survey source is within 2″
+1. ≥ 2 detections in any survey (`--min-detections`) — a single detection never passes
 2. not a star — no Gaia match within 1.5″ with ≥ 5σ parallax or proper motion
 3. not an AGN/quasar — no Milliquas match within 1.5″
 4. age (first → last detection, all surveys) < 50 d
 5. not stochastic — the light curve doesn't keep changing direction
-6. rise ≥ 1 and fade ≥ 0.25 mag/day in some band
+6. rise ≥ 0.7 and fade ≥ 0.15 mag/day in some band
 
 Rates are measured per band (survey + filter) between each epoch and the first epoch
 ≥ 1 day later, requiring Δmag ≥ 0.5 and ≥ 4σ. Upper limit → detection gives a lower
@@ -54,25 +56,60 @@ ranked by the slower of the two. All thresholds are options:
 ```
 sbatch 05_find_fast_transients.sh --rise-threshold 1.0 --require either
 sbatch 05_find_fast_transients.sh --method peak --filters i z y
+sbatch 05_find_fast_transients.sh --prefix T
+```
+
+The output keeps, for the rise and the fade, the stretch of light curve that gave the
+rate (`rise_start_mjd` → `rise_end_mjd`, same for fade); the scanner shades it.
+
+**Benchmark.** `T202502161025195m274154` is a known fast transient that every version of
+the filter must keep. Step 5 ends its log with `BENCHMARK PASSED`, or
+`BENCHMARK TEST FAILED` with the cuts it failed and its numbers — then the filter needs
+changing before the candidate list is trusted:
+
+```
+grep -A1 BENCHMARK logs/tidez_find_fast_transients_<jobid>.err
 ```
 
 ## Running on Bridges-2
 
-The scripts call the env's Python directly (`/jet/home/salgundi/envs/tidez/bin/python`)
-and run from `scripts/`, writing logs to `logs/`:
+`scripts/run_pipeline.sh` submits every step at once, each as its own job chained with
+`--dependency=afterok` on the steps it needs (2, 3, 4a wait for 1; 5 waits for 2, 3, 4a,
+4b; 6 waits for 5). Independent steps run in parallel, and a failed step cancels the ones
+after it. Step 6 is always run with `--fresh`, so the bundle is rebuilt from the new list.
 
 ```
-cd scripts
-sbatch 01_create_masterfile.sh
-sbatch 02_build_lcs.sh
-export BOOM_USERNAME=... BOOM_PASSWORD=...
-sbatch 03_get_boom_lc.sh
-sbatch 04a_enrich.sh
-export TNS_ANIBOT_API=... TNS_ANIBOT_USER_AGENT=...
-sbatch 04b_download_tns_objects.sh
-sbatch 05_find_fast_transients.sh
-sbatch 06_scanning_setup.sh            # --retry-legacy re-fetches failed Legacy Survey images
+git pull
+export BOOM_USERNAME=... BOOM_PASSWORD=...                # steps 3, 4a
+export TNS_ANIBOT_API=... TNS_ANIBOT_USER_AGENT=...       # step 4b
+bash scripts/run_pipeline.sh                    # everything -> data/fast_transients.h5
+bash scripts/run_pipeline.sh --from 5           # only steps 5 and 6
+bash scripts/run_pipeline.sh --steps "2 5 6"    # an explicit list
+bash scripts/run_pipeline.sh --from 5 -- --prefix T --rise-threshold 1.0   # after -- : step-5 options
+squeue -u $USER
 ```
+
+### What to re-run after a change
+
+Only re-run a step when its inputs or its code changed; everything downstream of it must
+follow. Steps you leave out reuse their files in `data/`.
+
+| What changed | Run | Skip |
+|---|---|---|
+| New DECam data on disk | `--steps "1 2 3 4a 5 6"` (step 1 is incremental) | 4b, unless you also want a newer TNS dump |
+| DECam detection / epoch rules (`build_lcs.py`) | `--steps "2 5 6"` | 1, 3, 4a, 4b |
+| ZTF/LSST light-curve rules (`get_boom_lcs.py`) | `--steps "3 5 6"` | 1, 2, 4a, 4b |
+| Catalog crossmatch radius / catalogs (`enrich.py`) | `--steps "4a 5 6"` | 1, 2, 3, 4b |
+| Star / AGN / variable / TNS rules (`basic_filtering.py`) | `--from 5` | 1–4 |
+| Refresh the TNS dump | `--steps "4b 5 6"` | 1, 2, 3, 4a |
+| Filter cuts or thresholds (`find_fast_transients.py`, `multisurvey_photstats.py`) | `--from 5` | 1–4 |
+| What goes into the bundle (`scanning_setup.py`) | `--steps 6` | 1–5 |
+| Scanner page or webapp only (`webapp.py`, `utils/scanner.html`, `plot_lightcurve.py`) | nothing — restart the webapp | everything |
+
+Steps 3 (BOOM light curves, ~12 h) and 4a (catalog crossmatches) are the slow,
+network-bound ones and rarely need re-running. Each script can also be submitted on its
+own from `scripts/` (`sbatch 05_find_fast_transients.sh --prefix T`);
+`06_scanning_setup.sh --retry-legacy` re-fetches failed Legacy Survey images.
 
 Install into a fresh env with `pip install -e .` (Python ≥ 3.12).
 
@@ -89,8 +126,11 @@ The page shows the candidates in the step-5 ranking:
 
 - Prev/Next, or type an objids `.txt` file (relative to `data/`) or a bare objid and
   click Apply.
-- Plotly light curve of DECam + ZTF + LSST; clicking a DECam detection shows its
-  template / science / difference stamps (stamps are stored for detections only).
+- Plotly light curve of DECam + ZTF + LSST, coloured by filter (u violet, g green,
+  r red, i orange, z white, y teal; DECam ◆, ZTF ●, LSST ▲, upper limits ▼). The
+  stretches that gave the filter's rise and fade are shaded, labelled with the rate,
+  band and pair type (a `≥` rate is a bound from an upper limit). Clicking a DECam
+  detection shows its template / science / difference stamps (stored for detections only).
 - Legacy Survey image, with a link to the full viewer.
 - DECam, program, ZTF, Rubin and RA/Dec chips — click to copy.
 - **TNS ↗** opens the matched TNS page; the badge says whether our DECam objid is in
