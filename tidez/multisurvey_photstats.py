@@ -1,13 +1,13 @@
 """
 Multi-survey photometry statistics shared by the transient filters (not a script).
 
-    from tidez import multisurvey_photostats as photostats
+    from tidez import multisurvey_photstats as photostats
     lc = photostats.combine(decam_lc, boom_lc)     # one DECam + ZTF + LSST stream (times in UT)
     stats = photostats.object_stats(lc).join(photostats.rates(lc))
 
 Combined stream columns: objid, survey, filter, mjd, mag, magerr, limmag, detected.
 Detections carry mag/magerr; upper limits have mag = NaN and limmag set (the
-convention of both get_lcs.py and get_boom_lcs.py).
+convention of both build_lcs.py and get_boom_lcs.py).
 
 Rates are computed per *band*, where a band is a (survey, filter) pair -- DECam g,
 ZTF g and LSST g are separate sequences -- so filter/zero-point differences between
@@ -56,7 +56,7 @@ BAND_KEYS = ["objid", "survey", "filter"]
 # ---------------------------------------------------------------------------
 
 def combine(decam_lc: pd.DataFrame, boom_lc: pd.DataFrame | None = None) -> pd.DataFrame:
-    """One light-curve stream from get_lcs.py (DECam) and get_boom_lcs.py (ZTF/LSST) output."""
+    """One light-curve stream from build_lcs.py (DECam) and get_boom_lcs.py (ZTF/LSST) output."""
     decam = decam_lc.rename(columns={"limmag5": "limmag"}).assign(survey="DECam")
     parts = [decam[LC_COLUMNS]]
     if boom_lc is not None and len(boom_lc):

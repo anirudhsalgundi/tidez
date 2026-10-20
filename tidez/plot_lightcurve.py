@@ -1,6 +1,6 @@
 """
 Plot the combined DECam + ZTF + LSST lightcurve for one object in the
-master H5 file (see build_h5.py, crossmatch_boom.py).
+master H5 file (see scanning_setup.py).
 
 X axis: "Days ago" (since today) on the bottom, "Days since first
 detection" on the top (twin axis, same tick positions, different labels).

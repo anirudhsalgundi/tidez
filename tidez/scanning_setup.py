@@ -10,7 +10,7 @@ offline:
                                    (rise_rate, rise_band, fade_rate, age_days, ...)
   /<objid>/lightcurve              every DECam epoch: MJD_OBS, FILTER, MAG_FPHOT, MAGERR_FPHOT,
                                    SNR_FPHOT, STATUS_FPHOT, LIM_MAG3, LIM_MAG5, CNNSCORE, and
-                                   DETECTED (the same detection rule as get_lcs.py)
+                                   DETECTED (the same detection rule as build_lcs.py)
   /<objid>/cutouts/{template,science,diff}
                                    float16 (n, 121, 121) stamps for detection epochs only
                                    (DETECTED, or STATUS_FPHOT == 'p'); each stamp is divided
@@ -31,8 +31,8 @@ failed Legacy Survey fetch only does what's missing (objects whose cutout fetch 
 are written without one; --retry-legacy fetches those).
 
 Usage:
-    python tidez/make_scan_bundle.py
-    python tidez/make_scan_bundle.py --candidates data/fast_transients.csv --out data/scan_bundle.h5
+    python tidez/scanning_setup.py
+    python tidez/scanning_setup.py --candidates data/fast_transients.csv --out data/fast_transients.h5
 """
 
 import argparse
@@ -51,7 +51,7 @@ from tidez.crossmatch_legacy_survey import (DEFAULT_LAYER, DEFAULT_PIXSCALE, DEF
                                             fetch_cutout_bytes, write_legacy_cutout)
 from tidez.build_lcs import GOOD_STATUS, MIN_CNN, MIN_SNR
 from tidez.logger import get_logger
-logger = get_logger("make_scan_bundle")
+logger = get_logger("scanning_setup")
 
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parent.parent
 DATA_DIR = PROJECT_ROOT / "data"
@@ -96,7 +96,7 @@ def read_decam(file_path: str) -> tuple:
         status = _strip(t["STATUS_FPHOT"])
         lc["STATUS_FPHOT"] = np.char.encode(status, "ascii")
         lc["CNNSCORE"] = t["CNNSCORE_ALT"]
-        # same rule as get_lcs.py (NaN comparisons are False, so NaNs never count)
+        # same rule as build_lcs.py (NaN comparisons are False, so NaNs never count)
         lc["DETECTED"] = ((status == GOOD_STATUS) & (lc["SNR_FPHOT"] > MIN_SNR) & (lc["CNNSCORE"] > MIN_CNN)
                           & (lc["MAG_FPHOT"] <= lc["LIM_MAG5"]))
         epoch_idx = np.flatnonzero(lc["DETECTED"] | (status == GOOD_STATUS)).astype("i4")

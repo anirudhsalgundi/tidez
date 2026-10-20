@@ -6,15 +6,15 @@ Find fast transients on the combined DECam + ZTF + LSST light curves.
 2. Age: first -> last detection across all surveys < --max-age-days (default 50).
 3. Not stochastic: reversal_frac < --max-reversal-frac (0.4), i.e. the light curve doesn't
    keep changing direction (AGN-like flickering; only significant steps count) -- see
-   multisurvey_photostats.variability_stats.
-4. Rates (tidez.multisurvey_photostats), computed independently in each band (survey + filter)
-   on the individual epochs (UT): rise >= --rise-threshold AND fade >= --fade-threshold
-   (default 0.5 mag/day each; --require either to accept just one). A rate counts
+   multisurvey_photstats.variability_stats.
+4. Rates (tidez.multisurvey_photstats), computed independently in each band (survey + filter)
+   on the individual epochs (UT): rise >= --rise-threshold (default 1 mag/day) AND
+   fade >= --fade-threshold (default 0.25 mag/day; --require either to accept just one). A rate counts
    whether it is measured between two detections or is a lower bound from an upper
    limit next to a detection (non-detection -> detection for rises, detection ->
    non-detection for fades). --method picks how rates are measured:
      pairs  (default) between neighbouring epochs in a band: a pair counts if it is
-            >= --min-dt-days apart (6 h) and changes by >= --min-delta-mag (0.5) and
+            >= --min-dt-days apart (1 d) and changes by >= --min-delta-mag (0.5) and
             >= --sigma-thresh (4) x its error
      peak   ZTFReST-style: over the continuous rise into each band's peak and the
             continuous fade after it (>= --min-run-points points linked by consecutive
@@ -57,9 +57,9 @@ BOOM_FILE = DATA_DIR / "boom_lc.parquet"
 OUT_PREFIX = DATA_DIR / "fast_transients"
 
 MAX_AGE_DAYS = 50.0
-RISE_THRESHOLD = 1  # mag/day
+RISE_THRESHOLD = 1.0  # mag/day
 FADE_THRESHOLD = 0.25  # mag/day
-MIN_DT_DAYS = 1     # in fraction of days
+MIN_DT_DAYS = 1.0   # days
 MIN_DELTA_MAG = 0.5
 SIGMA_THRESH = 4.0
 MAX_REVERSAL_FRAC = 0.4
@@ -145,7 +145,7 @@ def find_fast_transients(lc: pd.DataFrame, max_age_days: float, rise_threshold: 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Find fast transients on the combined DECam/ZTF/LSST light curves.")
-    parser.add_argument("--lc", type=pathlib.Path, default=LC_FILE, help="DECam light-curve Parquet (get_lcs.py).")
+    parser.add_argument("--lc", type=pathlib.Path, default=LC_FILE, help="DECam light-curve Parquet (build_lcs.py).")
     parser.add_argument("--boom", type=pathlib.Path, default=BOOM_FILE, help="ZTF/LSST Parquet (get_boom_lcs.py).")
     parser.add_argument("--no-boom", action="store_true", help="Use the DECam light curves only.")
     parser.add_argument("--out-prefix", type=pathlib.Path, default=OUT_PREFIX)
@@ -158,7 +158,7 @@ def main() -> None:
                         help="pairs: between neighbouring epochs (default); "
                              "peak: ZTFReST-style continuous runs around each band's peak.")
     parser.add_argument("--min-dt-days", type=float, default=MIN_DT_DAYS,
-                        help="Minimum time between the two points of a rate (default 0.25 d = 6 h).")
+                        help="Minimum time between the two points of a rate, in days (default 1).")
     parser.add_argument("--min-delta-mag", type=float, default=MIN_DELTA_MAG,
                         help="Minimum magnitude change for a rate to count (default 0.5).")
     parser.add_argument("--sigma-thresh", type=float, default=SIGMA_THRESH,

@@ -1,7 +1,7 @@
 """
 Fetch a Legacy Survey (DR10) cutout image for every object already in the
 master H5 (see build_h5.py) and write the raw image bytes back into the
-same H5 file. Like crossmatch_boom.py, this is a separate, resumable,
+same H5 file. This is a separate, resumable,
 network-bound pass so the slow part is cached once and the scanner webapp
 can just read what's already stored -- no live network calls per page view.
 

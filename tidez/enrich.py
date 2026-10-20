@@ -6,25 +6,25 @@ For each batch of objects in data/all_objects.csv, one cone search per catalog
 2MASS_PSC, AllWISE, CatWISE2020, GALEX, DESI_DR1, NED, VSX, milliquas_v8, TNS) returns
 every source within --radius-arcsec. *All* matches and *all* their fields are kept,
 so new cuts (tighter radii, other catalogs, other columns) never need a re-query;
-filtering.py picks what it needs.
+basic_filtering.py picks what it needs.
 
 These are positional matches on BOOM's copies of the reference catalogs, so they work
 for every DECam object, whether or not ZTF/LSST ever saw it.
 
-Output: data/context/<catalog>.parquet, one row per (DECam object, catalog source):
+Output: data/crossmatches/<catalog>.parquet, one row per (DECam object, catalog source):
     decam_objid, rank (0 = nearest), n_matches, sep_arcsec, id, <every catalog field>
 Objects with no match in a catalog have no rows in that file. Nested fields are stored
 as JSON strings; the GeoJSON 'coordinates' field is dropped (ra/dec are kept).
 
-Resumable: each batch is saved under data/context_parts/ as it finishes and skipped on
-a re-run. Once every object is done the parts are merged into data/context/ and the
+Resumable: each batch is saved under data/crossmatches_parts/ as it finishes and skipped on
+a re-run. Once every object is done the parts are merged into data/crossmatches/ and the
 parts directory is removed.
 
 Needs BOOM_USERNAME and BOOM_PASSWORD in the environment.
 
 Usage:
-    python tidez/get_context.py
-    python tidez/get_context.py --radius-arcsec 10 --catalogs Gaia_DR3 milliquas_v8
+    python tidez/enrich.py
+    python tidez/enrich.py --radius-arcsec 10 --catalogs Gaia_DR3 milliquas_v8
 """
 
 import argparse
@@ -44,12 +44,12 @@ import requests
 from tqdm import tqdm
 
 from tidez.logger import get_logger
-logger = get_logger("get_context")
+logger = get_logger("enrich")
 
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parent.parent
 DATA_DIR = PROJECT_ROOT / "data"
 MASTER_FILE = DATA_DIR / "all_objects.csv"
-OUT_DIR = DATA_DIR / "context"
+OUT_DIR = DATA_DIR / "crossmatches"
 
 BOOM_BASE = "https://api.kaboom.caltech.edu"
 REQUEST_TIMEOUT = 180

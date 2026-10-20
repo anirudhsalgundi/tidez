@@ -57,7 +57,7 @@ def _render_png(array: np.ndarray, diverging: bool) -> str:
 def get_object_cutouts(h5file, objid: str, epoch_idx: int) -> dict:
     """Return {'template': b64png, 'science': b64png, 'diff': b64png} for one epoch.
 
-    Scan bundles (make_scan_bundle.py) store stamps for detection epochs only, with
+    Scan bundles (scanning_setup.py) store stamps for detection epochs only, with
     cutouts/epoch_idx saying which lightcurve rows they belong to; older H5 files store
     one stamp per lightcurve row. Raises IndexError if the epoch has no stored stamp."""
     cutout_group = h5file[objid]["cutouts"]

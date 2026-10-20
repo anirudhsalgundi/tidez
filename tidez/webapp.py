@@ -9,8 +9,8 @@ objid is among its internal names. Favorite and To-report toggle the object
 in data/favorite_sources.txt and data/tns_to_report.txt.
 
 Usage:
-    python -m tidez.webapp
-    python -m tidez.webapp --h5 data/tidez_master.h5 --port 8000
+    python -m tidez.webapp                     # reads data/fast_transients.h5 (step 6)
+    python -m tidez.webapp --h5 data/fast_transients.h5 --port 8000
 """
 
 import argparse
@@ -30,7 +30,6 @@ from tidez.cutouts import get_object_cutouts
 from tidez.legacy_cutout import get_object_legacy_cutout
 from tidez.logger import get_logger
 from tidez.plot_lightcurve import (
-    DEFAULT_H5,
     crossmatch_title_suffix,
     first_detection_jd,
     load_object_rows,
@@ -44,6 +43,7 @@ TEMPLATES_DIR = PROJECT_ROOT / "utils"
 DEFAULT_FAVORITES_FILE = DATA_DIR / "favorite_sources.txt"
 DEFAULT_REPORT_FILE = DATA_DIR / "tns_to_report.txt"
 MASTER_FILE = DATA_DIR / "all_objects.csv"
+DEFAULT_H5 = DATA_DIR / "fast_transients.h5"  # written by scanning_setup.py
 
 app = FastAPI(title="tidez scanner")
 
@@ -114,7 +114,7 @@ def _text_attr(group, key: str) -> str | None:
 
 
 def _tns_info(group) -> dict:
-    """TNS match stored by make_scan_bundle.py. tns_url uses the bare name
+    """TNS match stored by scanning_setup.py. tns_url uses the bare name
     ("AT 2025abc" -> https://www.wis-tns.org/object/2025abc)."""
     tns_name = _text_attr(group, "tns_name")
     decam_on_tns = group.attrs.get("decam_on_tns")
@@ -245,7 +245,7 @@ def api_remove_from_list(name: str, objid: str):
 def main():
     parser = argparse.ArgumentParser(description="Run the tidez web scanner.")
     parser.add_argument("--h5", type=pathlib.Path, default=DEFAULT_H5,
-                         help="Master H5 file to read from.")
+                         help="Scan bundle from scanning_setup.py (default data/fast_transients.h5).")
     parser.add_argument("--favorites-file", type=pathlib.Path, default=DEFAULT_FAVORITES_FILE,
                          help="Text file to append favorited objids to.")
     parser.add_argument("--report-file", type=pathlib.Path, default=DEFAULT_REPORT_FILE,

@@ -1,7 +1,7 @@
 """
 Step 2: build the light-curve Parquet files for every object in the master file.
 
-For each FITS file in data/all_objects.csv (from get_data.py), read only the
+For each FITS file in data/all_objects.csv (from create_masterdb.py), read only the
 light-curve columns of the HDU 1 table (memory-mapped, so the 121x121 thumbnails
 are never read off disk). Every epoch with a real filter and a finite LIM_MAG5 is
 kept, and is either a detection or an upper limit. One pass writes two versions
@@ -22,8 +22,8 @@ outright -- ZP, SNR, mag and even MJD_OBS are NaN).
 Columns: objid, mjd, filter, mag, magerr, limmag5, detected, status, science_name
 
 Usage:
-    python tidez/get_lcs.py
-    python tidez/get_lcs.py --master data/all_objects.csv --out-dir data --workers 32
+    python tidez/build_lcs.py
+    python tidez/build_lcs.py --master data/all_objects.csv --out-dir data --workers 32
 """
 
 import argparse
@@ -40,7 +40,7 @@ from astropy.io import fits
 from tqdm import tqdm
 
 from tidez.logger import get_logger
-logger = get_logger("get_lcs")
+logger = get_logger("build_lcs")
 
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parent.parent
 DATA_DIR = PROJECT_ROOT / "data"

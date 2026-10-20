@@ -11,17 +11,17 @@ filter can use its own. basic_flags() builds all of them at once:
 
 Flags and their data:
     is_rock      fewer than min_detections detections (any survey), unless   light curve,
-                 a galaxy is nearby                                       context/LSDR10
-    is_star      Gaia match with significant parallax / proper motion,    context/Gaia_DR3,
-                 or (optionally) a Legacy Survey point-source match        context/LSPSC
-    is_variable  known variable star                                     context/VSX
-    is_agn       known quasar / AGN                                       context/milliquas_v8
+                 a galaxy is nearby                                       crossmatches/LSDR10
+    is_star      Gaia match with significant parallax / proper motion,    crossmatches/Gaia_DR3,
+                 or (optionally) a Legacy Survey point-source match        crossmatches/LSPSC
+    is_variable  known variable star                                     crossmatches/VSX
+    is_agn       known quasar / AGN                                       crossmatches/milliquas_v8
     is_on_tns    already reported to TNS (local TNS dump)                 data/tns_public_objects.csv
 
 is_on_tns is a label, not a contaminant: basic_flags() leaves it out of `clean`
 unless tns_is_contaminant=True.
 
-Context files come from enrich.py (data/context/<catalog>.parquet: every match within
+Crossmatch files come from enrich.py (data/crossmatches/<catalog>.parquet: every match within
 5", nearest first); the TNS dump from download_tns_objects.py.
 """
 

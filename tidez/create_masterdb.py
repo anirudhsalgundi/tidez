@@ -11,8 +11,8 @@ Re-runs reuse the previous row for any object whose file_path is unchanged
 (the filename changes when an object gains detections); --full re-reads all.
 
 Usage:
-    python -m tidez.get_data
-    python -m tidez.get_data --workers 32 --full
+    python tidez/create_masterdb.py
+    python tidez/create_masterdb.py --workers 32 --full
 """
 
 import argparse
@@ -27,7 +27,7 @@ from astropy.io import fits
 from tqdm import tqdm
 
 from tidez.logger import get_logger
-logger = get_logger("get_data")
+logger = get_logger("create_masterdb")
 
 # (program, search directory)
 SEARCH_DIRS = [
