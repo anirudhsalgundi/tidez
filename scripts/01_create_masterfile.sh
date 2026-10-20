@@ -21,7 +21,7 @@
 PYTHON=/jet/home/salgundi/envs/tidez/bin/python
 PROJECT_DIR=/ocean/projects/phy250012p/salgundi/tidez
 
-# get_data.py does `from tidez.logger import ...`; PYTHONPATH lets that resolve
+# create_masterdb.py does `from tidez.logger import ...`; PYTHONPATH lets that resolve
 # when the script is run by path.
 export PYTHONPATH="$PROJECT_DIR${PYTHONPATH:+:$PYTHONPATH}"
 

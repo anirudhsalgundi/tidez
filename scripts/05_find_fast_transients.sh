@@ -13,7 +13,7 @@
 
 # Step 5: fast-transient filter on the combined DECam + ZTF + LSST light curves
 # (data/lightcurves.parquet + data/boom_lc.parquet), with the basic vetoes from
-# data/context/ and data/tns_public_objects.csv. The funnel (objects left after each
+# data/crossmatches/ and data/tns_public_objects.csv. The funnel (objects left after each
 # cut, and removed by each cut alone) is printed to the .err log. Writes
 # data/fast_transients.csv/.txt and data/fast_transients_stats.parquet.
 # Single-threaded; the 32 CPUs are only there because RM-shared hands out memory
