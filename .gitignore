@@ -14,3 +14,7 @@ MatchToZTF.ipynb
 uv.lock
 __pycache__
 tidez.md
+.ipynb_checkpoints/
+*.h5
+*.parquet
+*.npz
