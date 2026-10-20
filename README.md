@@ -1,270 +1,119 @@
-# tidez
+# tidez - Transients in DECam and ZTF
 
-Pipeline for building, cross-matching, filtering, and visually scanning
-DECam transient candidates from the 3DTS/DESIRT search, combined with ZTF
-and LSST (via BOOM), Milliquas, and Legacy Survey data.
+An archival search for Fast-transient search on the DECam (DESIRT + DECam–ZTF experiment) candidates,
+combined with ZTF and LSST light curves and catalog crossmatches from BOOM.
+Everything up to step 6 runs on Bridges-2; scanning runs on a laptop.
 
-## Pipeline overview
+## Pipeline
 
-```
-get_data.py               -> list candidate FITS files on disk
-        |
-        v
-build_h5.py                -> tidez_master.h5   (one group per object:
-        |                                         lightcurve + cutouts)
-        |
-        v
-crossmatch_boom.py         -> adds ZTF/LSST crossmatch lightcurves (full dataset)
-        |
-        v
-find_real_fast_transients.py
-        -> Stage 1: rate cut (cheap, no crossmatch needed) on the FULL dataset
-        -> Stage 2: Milliquas crossmatch, only for rate-cut survivors
-        -> Stage 3: AGN veto (Milliquas match + stochastic-variability check)
-        -> Stage 4: Legacy Survey crossmatch, only for final survivors
-        -> fast_real_transients.txt / fast_real_transients_crossmatched.txt
-        |
-        v
-webapp.py / lightcurve_viewer.py    -> interactive scanning UI
-```
+| Step | SLURM script (`scripts/`) | Python (`tidez/`) | Writes (`data/`) |
+|---|---|---|---|
+| 1 | `01_create_masterfile.sh` | `create_masterdb.py` | `all_objects.csv` — objid, program, file_path, ra, dec |
+| 2 | `02_build_lcs.sh` | `build_lcs.py` | `lightcurves.parquet` (status `p` required), `lightcurves_any_status.parquet` |
+| 3 | `03_get_boom_lc.sh` | `get_boom_lcs.py` | `boom_lc.parquet` — ZTF/LSST alerts, non-detections, forced photometry |
+| 4a | `04a_enrich.sh` | `enrich.py` | `crossmatches/<catalog>.parquet` — every BOOM catalog match within 5″ |
+| 4b | `04b_download_tns_objects.sh` | `download_tns_objects.py` | `tns_public_objects.csv` |
+| 5 | `05_find_fast_transients.sh` | `find_fast_transients.py` | `fast_transients.csv`, `.txt`, `_stats.parquet` |
+| 6 | `06_scanning_setup.sh` | `scanning_setup.py` | `fast_transients.h5` — the scan bundle |
+| scan | — (laptop) | `webapp.py` + `utils/scanner.html` | `favorite_sources.txt`, `tns_to_report.txt` |
 
-The crossmatching cost scales with object count, but the filter itself
-doesn't need any crossmatch data to run (`find_best_rate_pair` in
-`transient_filters.py` works off DECam+ZTF+LSST lightcurve data alone) --
-so `find_real_fast_transients.py` runs the rate cut across the *entire*
-dataset first, and only pays for the (much slower, network-bound) Milliquas
-and Legacy Survey crossmatches on whatever small fraction of objects
-actually survives it. At tens of thousands of objects this is the
-difference between crossmatching everything vs. crossmatching a few
-hundred candidates.
+Libraries used by the steps: `basic_filtering.py` (rock / star / variable / AGN /
+on-TNS flags from `crossmatches/` and the TNS dump), `multisurvey_photstats.py`
+(per-band rise/fade rates and variability), `cutouts.py` and `legacy_cutout.py`
+(reading stamps and Legacy Survey images from the bundle),
+`crossmatch_legacy_survey.py` (fetching Legacy Survey images), `plot_lightcurve.py`
+(light-curve rows and band colours).
 
-`find_fast_transients.py`, `transient_hunt.py`, and `afterglow_hunt.py`
-(progressively stricter standalone filters) and the standalone
-`crossmatch_milliquas.py` / `crossmatch_legacy_survey.py` scripts still
-exist and work the same as before, for cases where you want crossmatch
-data for the *whole* dataset rather than just candidates, or want to
-iterate on filter thresholds without re-deriving the staged candidate set.
-See `scripts/05_crossmatch_legacy_survey_full.sh`,
-`scripts/06_crossmatch_milliquas_full.sh`, and
-`scripts/07_afterglow_hunt_full.sh`.
+Steps 2, 3, 4a and 4b only need step 1; step 5 needs 2–4; step 6 needs 1, 3 and 5.
+Steps 3, 4a and 6 are resumable: re-submitting the job continues where it stopped.
 
-Everything lives in one HDF5 file, `data/tidez_master.h5`. Every script that
-touches it is resumable: re-running just processes objects that don't yet
-have the relevant group, so it's safe to append new candidates or re-run a
-crossmatch pass at any time without redoing existing work.
+### Detection rules
 
-### `tidez_master.h5` layout
+- DECam (step 2): SNR > 5, CNN score > 0.7, mag ≤ LIM_MAG5, and (in
+  `lightcurves.parquet`) STATUS_FPHOT == `p`. Every other epoch is an upper limit at
+  LIM_MAG5; epochs without a filter or LIM_MAG5 are dropped.
+- ZTF/LSST (step 3): alerts are detections, non-detections are upper limits, forced
+  photometry counts as a detection at SNR ≥ 5 with positive flux.
+
+### Fast-transient filter (step 5)
+
+The log prints a funnel of how many objects survive each cut:
+
+1. not a rock — at least 2 detections, unless an extended Legacy Survey source is within 2″
+2. not a star — no Gaia match within 1.5″ with ≥ 5σ parallax or proper motion
+3. not an AGN/quasar — no Milliquas match within 1.5″
+4. age (first → last detection, all surveys) < 50 d
+5. not stochastic — the light curve doesn't keep changing direction
+6. rise ≥ 1 and fade ≥ 0.25 mag/day in some band
+
+Rates are measured per band (survey + filter) between each epoch and the first epoch
+≥ 1 day later, requiring Δmag ≥ 0.5 and ≥ 4σ. Upper limit → detection gives a lower
+bound on the rise, detection → upper limit a lower bound on the fade. Candidates are
+ranked by the slower of the two. All thresholds are options:
 
 ```
-/catalog                          compound dataset: objid, ra, dec, n_epochs
-
-/<objid>/                         attrs: objid, ra, dec
-/<objid>/lightcurve                DECam forced-photometry epochs (all
-                                    STATUS_FPHOT values kept: 'p' good,
-                                    'q' marginal, 'm' non-detection)
-/<objid>/cutouts/{template,science,diff}   (n_epochs, 121, 121) float32 stamps
-
-/<objid>/crossmatch/               attrs: radius_arcsec           [crossmatch_boom.py]
-/<objid>/crossmatch/ztf/           attrs: objectId, separation_arcsec, n_alerts
-/<objid>/crossmatch/ztf/lightcurve
-/<objid>/crossmatch/lsst/          (same shape as ztf, if matched)
-
-/<objid>/milliquas/                attrs: matched (bool), and if matched,   [crossmatch_milliquas.py]
-                                    separation_arcsec + whatever columns
-                                    the Milliquas VizieR table returned
-                                    (Name, Type, z, Qpct, ...)
-
-/<objid>/legacy_survey/            attrs: layer, pixscale, size_pix         [crossmatch_legacy_survey.py]
-/<objid>/legacy_survey/cutout_jpg   raw JPEG bytes (uint8 array)
+sbatch 05_find_fast_transients.sh --rise-threshold 1.0 --require either
+sbatch 05_find_fast_transients.sh --method peak --filters i z y
 ```
 
-## Setup
+## Running on Bridges-2
 
-Dependencies are managed with [uv](https://docs.astral.sh/uv/); every
-script below is run as `uv run python -m tidez.<script>` (or
-`uv run tidez/<script>.py`), which resolves the environment automatically.
-
-BOOM crossmatching needs credentials in the environment:
+The scripts call the env's Python directly (`/jet/home/salgundi/envs/tidez/bin/python`)
+and run from `scripts/`, writing logs to `logs/`:
 
 ```
-export BOOM_USERNAME=...
-export BOOM_PASSWORD=...
+cd scripts
+sbatch 01_create_masterfile.sh
+sbatch 02_build_lcs.sh
+export BOOM_USERNAME=... BOOM_PASSWORD=...
+sbatch 03_get_boom_lc.sh
+sbatch 04a_enrich.sh
+export TNS_ANIBOT_API=... TNS_ANIBOT_USER_AGENT=...
+sbatch 04b_download_tns_objects.sh
+sbatch 05_find_fast_transients.sh
+sbatch 06_scanning_setup.sh            # --retry-legacy re-fetches failed Legacy Survey images
 ```
 
-## 1. Building the master H5
+Install into a fresh env with `pip install -e .` (Python ≥ 3.12).
+
+## Scanning (laptop)
+
+Copy the bundle (≈ 1 MB per candidate) and start the scanner:
 
 ```
-uv run python -m tidez.build_h5 --input-list data/candidate_fits_files.txt
+scp <bridges2>:/ocean/projects/phy250012p/salgundi/tidez/data/fast_transients.h5 data/
+python -m tidez.webapp                 # http://127.0.0.1:8000, reads data/fast_transients.h5
 ```
 
-- `--input-list` — a text file of candidate FITS paths, one per line (use
-  this on the remote/cluster; see `get_data.py` for how these lists get
-  generated from the raw DESIRT search output).
-- `--input-dir` — alternatively, glob a local directory of `*.fits` files.
-- `--output` — defaults to `data/tidez_master.h5`.
+The page shows the candidates in the step-5 ranking:
 
-Re-running with a new/updated input list **appends** — it skips any objid
-already present in the H5, so you can add new candidates over time without
-rebuilding from scratch.
+- Prev/Next, or type an objids `.txt` file (relative to `data/`) or a bare objid and
+  click Apply.
+- Plotly light curve of DECam + ZTF + LSST; clicking a DECam detection shows its
+  template / science / difference stamps (stamps are stored for detections only).
+- Legacy Survey image, with a link to the full viewer.
+- DECam, program, ZTF, Rubin and RA/Dec chips — click to copy.
+- **TNS ↗** opens the matched TNS page; the badge says whether our DECam objid is in
+  the TNS internal names ("DECam on TNS"), the object is on TNS without our data
+  ("DECam not on TNS"), or there is no TNS match ("Not on TNS").
+- **☆ Favorite** and **⚑ To report** toggle the object in `data/favorite_sources.txt`
+  and `data/tns_to_report.txt` (one objid per line).
 
-## 2. ZTF/LSST crossmatch
+Options: `--h5`, `--favorites-file`, `--report-file`, `--port`, `--host`, and
+`--plot-all` (also count STATUS_FPHOT `q` epochs as detections).
 
-Run this against the master H5 after `build_h5.py`, on the full dataset —
-`find_real_fast_transients.py` (step 3 below) relies on it already being
-there for its crossmatched-output split.
-
-```
-uv run python -m tidez.crossmatch_boom --radius-arcsec 5
-```
-Batches objects into one cone-search request per `BATCH_SIZE` (500)
-objects rather than one request per object.
-
-Resumability is tracked via a small checkpoint text file
-(`data/boom_progress.txt` — override with `--progress-file`), not by
-re-scanning the whole H5 every run. At tens of thousands of objects,
-checking "is this done?" against the H5 directly means one HDF5 metadata
-lookup per object, which gets slow on networked/parallel filesystems (e.g.
-Bridges2's Ocean) — the checkpoint file makes a re-run's resumability
-check a single fast file read instead. If it's missing (first run, or
-deleted), the script falls back to scanning the H5 once (with a progress
-bar) and rebuilds it. Same pattern used by `crossmatch_milliquas.py` and
-`crossmatch_legacy_survey.py` below.
-
-## 3. Finding real fast transients
-
-`find_real_fast_transients.py` is the recommended way to go from a master
-H5 to a candidate list — see the pipeline diagram above for why it stages
-the crossmatching after the rate cut instead of before it.
+## Scan bundle layout (`fast_transients.h5`)
 
 ```
-uv run python -m tidez.find_real_fast_transients --rise-threshold 0.5 --fade-threshold 0.2
+/<objid>/                         attrs: objid, ra, dec, program, decam_on_tns, TNS match,
+                                  and every column of fast_transients.csv
+/<objid>/lightcurve               DECam epochs: MJD_OBS, FILTER, MAG_FPHOT, MAGERR_FPHOT,
+                                  SNR_FPHOT, STATUS_FPHOT, LIM_MAG3, LIM_MAG5, CNNSCORE, DETECTED
+/<objid>/cutouts/{template,science,diff}
+                                  float16 (n, 121, 121) stamps of detection epochs;
+                                  pixel value = stamp * <key>_scale
+/<objid>/cutouts/epoch_idx        lightcurve row of each stamp
+/<objid>/crossmatch/{ztf,lsst}/   ZTF / LSST light curves from boom_lc.parquet
+/<objid>/legacy_survey/           Legacy Survey DR10 JPEG
+/scan_order                       candidate objids, fastest first
 ```
-
-Its four stages (implemented in `tidez/transient_filters.py`,
-`crossmatch_milliquas.py`, and `crossmatch_legacy_survey.py`):
-
-| Stage | What it does |
-|---|---|
-| 1. Rate cut | Quality-gated, **asymmetric** rise/fade rate cut on every object's DECam(`'p'`-only)+ZTF+LSST lightcurve: DECam `'p'`-only detections, SNR floor, minimum baseline, minimum amplitude, statistical significance, anti-blip check, minimum detection count, then rise ≥ 0.5 mag/day / fade ≥ 0.2 mag/day by default (real fast transients typically rise faster than they fade). No crossmatch data needed — this is what lets the rest of the pipeline skip crossmatching most of the dataset. |
-| 2. Milliquas crossmatch | Only for stage-1 survivors lacking a `/milliquas` group already. |
-| 3. AGN veto | Reject a Milliquas match, or stochastic-variability signals: reversal fraction (how often consecutive delta-mag flips sign) and persistent-detection fraction (what fraction of epochs *outside* the event window are still detections) — both skip rather than reject when there's too little data to judge. |
-| 4. Legacy Survey crossmatch | Only for the *final* survivors (post-AGN-veto) lacking a `/legacy_survey` group already. |
-
-Run `--help` for the full list of tunable cuts (baseline, significance,
-blip window, stochasticity thresholds, Milliquas/Legacy Survey params,
-etc.) — all documented in the module docstring along with the reasoning
-behind each cut.
-
-It logs a per-stage breakdown (passed rate cut / rejected by Milliquas /
-rejected by stochasticity / final passed) so you can see where the sample
-is actually shrinking, not just the final count. Outputs:
-`data/fast_real_transients.txt` and
-`data/fast_real_transients_crossmatched.txt` (the subset with a ZTF/Rubin
-crossmatch).
-
-### Standalone filters / full-dataset crossmatch (optional)
-
-These pre-date `find_real_fast_transients.py` and still work the same way
-— useful if you want crossmatch data for the *whole* dataset (not just
-candidates), or want to iterate on filter thresholds without re-deriving
-the staged candidate set:
-
-| Script | What it does |
-|---|---|
-| `find_fast_transients.py` | Basic filter: steepest \|delta mag\|/delta t within any single band, same-visit duplicate guard. No quality/AGN cuts. |
-| `transient_hunt.py` | Adds `find_real_fast_transients.py`'s stage-1 quality cuts (artifact rejection) but with a single symmetric rate threshold, no AGN vetoing. |
-| `afterglow_hunt.py` | The same filter as `find_real_fast_transients.py`'s stages 1+2+3, but assumes Milliquas has already been crossmatched for the *whole* H5 (see `scripts/06_crossmatch_milliquas_full.sh`) rather than staging it — use this if you already have full-dataset Milliquas data and just want to re-filter with different thresholds. |
-| `crossmatch_milliquas.py` / `crossmatch_legacy_survey.py` | Crossmatch every object in the H5, not just candidates (`--radius-arcsec 3` / `--layer ls-dr10`). |
-
-```
-uv run python -m tidez.find_fast_transients --threshold 0.1
-uv run python -m tidez.transient_hunt --threshold 0.1
-uv run python -m tidez.afterglow_hunt --rise-threshold 0.5 --fade-threshold 0.2
-```
-
-## 4. Scanning candidates
-
-### Web scanner (recommended)
-
-```
-uv run python -m tidez.webapp --port 8000 [--plot-all] [--host 0.0.0.0]
-```
-Then open `http://<host>:8000`. Features:
-- Prev/Next through the object list, or type a candidates `.txt` filename
-  (e.g. `afterglow_candidates.txt`) into the filter box and click Apply to
-  restrict browsing to just that list; typing a bare objid jumps straight
-  to it.
-- Interactive Plotly lightcurve (DECam + ZTF + LSST), with a
-  zoom-adaptive top/bottom axis pair ("Days ago" / "Days since first
-  detection") that recomputes tick spacing and precision as you zoom.
-- Click a DECam point to load its template/science/diff cutout stamps.
-- Legacy Survey cutout panel next to the plot, with an "Open in Legacy
-  Survey ↗" button that opens the full viewer at that object's RA/Dec.
-- Copyable DECam/ZTF/Rubin object IDs and RA/Dec (comma-separated) in the
-  header bar.
-- Favorite button, writing to `data/favorite_sources.txt`.
-- By default only `STATUS_FPHOT == 'p'` (good subtraction quality) DECam
-  points are plotted; pass `--plot-all` to include `'q'`/`'m'` epochs too.
-
-**Running on a remote cluster (e.g. Bridges2):** start the webapp on the
-compute/login node, then tunnel a local port to it from your laptop:
-```
-ssh -L 8000:localhost:8000 <user>@<cluster-login-node>
-```
-(if `webapp.py` is running on a compute node reached via the login node,
-target the compute node's hostname instead of `localhost` in the `-L`
-mapping, and make sure the webapp itself binds `--host 0.0.0.0` so it's
-reachable from off-node.) Then open `http://localhost:8000` locally.
-
-### Matplotlib slide-deck viewer
-
-```
-uv run python -m tidez.lightcurve_viewer --objids-file data/afterglow_candidates.txt
-```
-Prev/Next through objects one at a time; double-click a series/legend
-entry to isolate it, double-click empty space to reset; same favoriting
-behavior as the webapp.
-
-### Single-object plot
-
-```
-uv run python -m tidez.plot_lightcurve <objid> [--save output.png]
-```
-
-## Other utilities
-
-- `query_h5.py` — read-side helpers: look up a single object's lightcurve
-  and cutouts by objid, or cone-search the catalog table by RA/Dec.
-- `cutouts.py` / `legacy_cutout.py` — render DECam / Legacy Survey stamps
-  as base64 PNGs (used internally by the webapp).
-- `get_data.py` — discovers raw DESIRT candidate FITS files on the shared
-  filesystem and writes the file-list inputs used by `build_h5.py`.
-- `transient_filters.py` — shared rate-cut / stochastic-variability-veto
-  logic used by both `find_real_fast_transients.py` and `afterglow_hunt.py`,
-  so the two definitions of "passes the filter" can't drift apart.
-- `progress.py` — shared checkpoint-file resumability logic used by
-  `crossmatch_boom.py`, `crossmatch_milliquas.py`, and
-  `crossmatch_legacy_survey.py` (see "ZTF/LSST crossmatch" above).
-- `logger.py` — shared colored console + file logger (writes to `logs/`),
-  used by every script above.
-
-## Batch scripts (Bridges2 / SLURM)
-
-`scripts/` has one `sbatch` script per pipeline stage, numbered in
-run order:
-
-| Script | Stage |
-|---|---|
-| `01_get_data.sh` | `get_data.py` |
-| `02_build_h5.sh` | `build_h5.py` |
-| `03_crossmatch_boom.sh` | `crossmatch_boom.py` (full dataset) |
-| `04_find_real_fast_transients.sh` | `find_real_fast_transients.py` (primary candidate-finding step) |
-| `05_crossmatch_legacy_survey_full.sh` | optional: `crossmatch_legacy_survey.py` on the full dataset |
-| `06_crossmatch_milliquas_full.sh` | optional: `crossmatch_milliquas.py` on the full dataset |
-| `07_afterglow_hunt_full.sh` | optional: `afterglow_hunt.py` re-filter, assumes 05/06 already ran |
-
-All of them set `export HDF5_USE_FILE_LOCKING=FALSE` (except
-`01_get_data.sh`, which never touches the H5) — needed on Bridges2's Ocean
-filesystem, where HDF5's default file-locking check can hang or fail even
-without a genuine concurrent writer. Every stage is resumable, so any of
-these are safe to `scancel` and resubmit.
